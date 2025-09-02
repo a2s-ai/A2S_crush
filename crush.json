@@ -1,8 +1,17 @@
 {
-  "$schema": "https://charm.land/crush.json",
-  "lsp": {
-    "Go": {
-      "command": "gopls"
+  "providers": {
+    "ollama": {
+      "name": "Ollama",
+      "base_url": "https://XXX-XXX-XXX-XXX/v1/",
+      "type": "openai",
+      "models": [
+        {
+          "name": "qwen3:235b-a22b-instruct-2507-q4_K_M",
+          "id": "qwen3:235b-a22b-instruct-2507-q4_K_M",
+          "context_window": 256000,
+          "default_max_tokens": 4096
+        }
+      ]
     }
   }
 }
