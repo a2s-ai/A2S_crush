@@ -36,9 +36,9 @@ daniel@MacBook A2S_crush %
 
 # A2S GPU Server
 
-* 4 x NVIDIA RTX 6000A
+* Ubuntu 24 LTS VM with 4 x NVIDIA RTX 6000A
 
-## Ollama (Docker) Settings
+## Ollama (Docker) Settings with 20k Context
 
 ```
 root@ai-ubuntu24gpu-large:~# cat /opt/run-ollama-max.sh
@@ -60,13 +60,14 @@ docker run \
        -v /data/opt/ollama:/root/.ollama \
        -e OLLAMA_KEEP_ALIVE=-1 \
        -e OLLAMA_MAX_LOADED_MODELS=1 \
-       -e OLLAMA_NUM_PARALLEL=4 \
+       -e OLLAMA_NUM_PARALLEL=1 \
        -e OLLAMA_MAX_QUEUE=512 \
        -e OLLAMA_ORIGINS="*" \
        -e OLLAMA_DEBUG=0 \
        -e OLLAMA_NUM_GPU_LAYERS=9999 \
        -e OLLAMA_DISABLE_CPU=1 \
        -e OLLAMA_LOAD_TIMEOUT=600 \
+       -e OLLAMA_CONTEXT_LENGTH=20480 \
        ollama/ollama:latest
 
 # EOF
