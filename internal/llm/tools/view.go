@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,15 +14,16 @@ import (
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/fantasy/ai"
 )
 
 //go:embed view.md
 var viewDescription []byte
 
 type ViewParams struct {
-	FilePath string `json:"file_path"`
-	Offset   int    `json:"offset"`
-	Limit    int    `json:"limit"`
+	FilePath string `json:"file_path" description:"The path to the file to read"`
+	Offset   int    `json:"offset" description:"The line number to start reading from (0-based)"`
+	Limit    int    `json:"limit" description:"The number of lines to read (defaults to 2000)"`
 }
 
 type ViewPermissionsParams struct {
@@ -50,178 +50,143 @@ const (
 	MaxLineLength    = 2000
 )
 
-func NewViewTool(lspClients *csync.Map[string, *lsp.Client], permissions permission.Service, workingDir string) BaseTool {
-	return &viewTool{
-		lspClients:  lspClients,
-		workingDir:  workingDir,
-		permissions: permissions,
-	}
-}
+func NewViewTool(lspClients *csync.Map[string, *lsp.Client], permissions permission.Service, workingDir string) ai.AgentTool {
+	return ai.NewAgentTool(
+		ViewToolName,
+		string(viewDescription),
+		func(ctx context.Context, params ViewParams, call ai.ToolCall) (ai.ToolResponse, error) {
+			if params.FilePath == "" {
+				return ai.NewTextErrorResponse("file_path is required"), nil
+			}
 
-func (v *viewTool) Name() string {
-	return ViewToolName
-}
+			// Handle relative paths
+			filePath := params.FilePath
+			if !filepath.IsAbs(filePath) {
+				filePath = filepath.Join(workingDir, filePath)
+			}
 
-func (v *viewTool) Info() ToolInfo {
-	return ToolInfo{
-		Name:        ViewToolName,
-		Description: string(viewDescription),
-		Parameters: map[string]any{
-			"file_path": map[string]any{
-				"type":        "string",
-				"description": "The path to the file to read",
-			},
-			"offset": map[string]any{
-				"type":        "integer",
-				"description": "The line number to start reading from (0-based)",
-			},
-			"limit": map[string]any{
-				"type":        "integer",
-				"description": "The number of lines to read (defaults to 2000)",
-			},
-		},
-		Required: []string{"file_path"},
-	}
-}
+			// Check if file is outside working directory and request permission if needed
+			absWorkingDir, err := filepath.Abs(workingDir)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error resolving working directory: %w", err)
+			}
 
-// Run implements Tool.
-func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
-	var params ViewParams
-	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
-		return NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
-	}
+			absFilePath, err := filepath.Abs(filePath)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error resolving file path: %w", err)
+			}
 
-	if params.FilePath == "" {
-		return NewTextErrorResponse("file_path is required"), nil
-	}
-
-	// Handle relative paths
-	filePath := params.FilePath
-	if !filepath.IsAbs(filePath) {
-		filePath = filepath.Join(v.workingDir, filePath)
-	}
-
-	// Check if file is outside working directory and request permission if needed
-	absWorkingDir, err := filepath.Abs(v.workingDir)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error resolving working directory: %w", err)
-	}
-
-	absFilePath, err := filepath.Abs(filePath)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error resolving file path: %w", err)
-	}
-
-	relPath, err := filepath.Rel(absWorkingDir, absFilePath)
-	if err != nil || strings.HasPrefix(relPath, "..") {
-		// File is outside working directory, request permission
-		sessionID, messageID := GetContextValues(ctx)
-		if sessionID == "" || messageID == "" {
-			return ToolResponse{}, fmt.Errorf("session ID and message ID are required for accessing files outside working directory")
-		}
-
-		granted := v.permissions.Request(
-			permission.CreatePermissionRequest{
-				SessionID:   sessionID,
-				Path:        absFilePath,
-				ToolCallID:  call.ID,
-				ToolName:    ViewToolName,
-				Action:      "read",
-				Description: fmt.Sprintf("Read file outside working directory: %s", absFilePath),
-				Params:      ViewPermissionsParams(params),
-			},
-		)
-
-		if !granted {
-			return ToolResponse{}, permission.ErrorPermissionDenied
-		}
-	}
-
-	// Check if file exists
-	fileInfo, err := os.Stat(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Try to offer suggestions for similarly named files
-			dir := filepath.Dir(filePath)
-			base := filepath.Base(filePath)
-
-			dirEntries, dirErr := os.ReadDir(dir)
-			if dirErr == nil {
-				var suggestions []string
-				for _, entry := range dirEntries {
-					if strings.Contains(strings.ToLower(entry.Name()), strings.ToLower(base)) ||
-						strings.Contains(strings.ToLower(base), strings.ToLower(entry.Name())) {
-						suggestions = append(suggestions, filepath.Join(dir, entry.Name()))
-						if len(suggestions) >= 3 {
-							break
-						}
-					}
+			relPath, err := filepath.Rel(absWorkingDir, absFilePath)
+			if err != nil || strings.HasPrefix(relPath, "..") {
+				// File is outside working directory, request permission
+				sessionID, messageID := GetContextValues(ctx)
+				if sessionID == "" || messageID == "" {
+					return ai.ToolResponse{}, fmt.Errorf("session ID and message ID are required for accessing files outside working directory")
 				}
 
-				if len(suggestions) > 0 {
-					return NewTextErrorResponse(fmt.Sprintf("File not found: %s\n\nDid you mean one of these?\n%s",
-						filePath, strings.Join(suggestions, "\n"))), nil
+				granted := permissions.Request(
+					permission.CreatePermissionRequest{
+						SessionID:   sessionID,
+						Path:        absFilePath,
+						ToolCallID:  call.ID,
+						ToolName:    ViewToolName,
+						Action:      "read",
+						Description: fmt.Sprintf("Read file outside working directory: %s", absFilePath),
+						Params:      ViewPermissionsParams(params),
+					},
+				)
+
+				if !granted {
+					return ai.ToolResponse{}, permission.ErrorPermissionDenied
 				}
 			}
 
-			return NewTextErrorResponse(fmt.Sprintf("File not found: %s", filePath)), nil
-		}
-		return ToolResponse{}, fmt.Errorf("error accessing file: %w", err)
-	}
+			// Check if file exists
+			fileInfo, err := os.Stat(filePath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					// Try to offer suggestions for similarly named files
+					dir := filepath.Dir(filePath)
+					base := filepath.Base(filePath)
 
-	// Check if it's a directory
-	if fileInfo.IsDir() {
-		return NewTextErrorResponse(fmt.Sprintf("Path is a directory, not a file: %s", filePath)), nil
-	}
+					dirEntries, dirErr := os.ReadDir(dir)
+					if dirErr == nil {
+						var suggestions []string
+						for _, entry := range dirEntries {
+							if strings.Contains(strings.ToLower(entry.Name()), strings.ToLower(base)) ||
+								strings.Contains(strings.ToLower(base), strings.ToLower(entry.Name())) {
+								suggestions = append(suggestions, filepath.Join(dir, entry.Name()))
+								if len(suggestions) >= 3 {
+									break
+								}
+							}
+						}
 
-	// Check file size
-	if fileInfo.Size() > MaxReadSize {
-		return NewTextErrorResponse(fmt.Sprintf("File is too large (%d bytes). Maximum size is %d bytes",
-			fileInfo.Size(), MaxReadSize)), nil
-	}
+						if len(suggestions) > 0 {
+							return ai.NewTextErrorResponse(fmt.Sprintf("File not found: %s\n\nDid you mean one of these?\n%s",
+								filePath, strings.Join(suggestions, "\n"))), nil
+						}
+					}
 
-	// Set default limit if not provided
-	if params.Limit <= 0 {
-		params.Limit = DefaultReadLimit
-	}
+					return ai.NewTextErrorResponse(fmt.Sprintf("File not found: %s", filePath)), nil
+				}
+				return ai.ToolResponse{}, fmt.Errorf("error accessing file: %w", err)
+			}
 
-	// Check if it's an image file
-	isImage, imageType := isImageFile(filePath)
-	// TODO: handle images
-	if isImage {
-		return NewTextErrorResponse(fmt.Sprintf("This is an image file of type: %s\n", imageType)), nil
-	}
+			// Check if it's a directory
+			if fileInfo.IsDir() {
+				return ai.NewTextErrorResponse(fmt.Sprintf("Path is a directory, not a file: %s", filePath)), nil
+			}
 
-	// Read the file content
-	content, lineCount, err := readTextFile(filePath, params.Offset, params.Limit)
-	isValidUt8 := utf8.ValidString(content)
-	if !isValidUt8 {
-		return NewTextErrorResponse("File content is not valid UTF-8"), nil
-	}
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error reading file: %w", err)
-	}
+			// Check file size
+			if fileInfo.Size() > MaxReadSize {
+				return ai.NewTextErrorResponse(fmt.Sprintf("File is too large (%d bytes). Maximum size is %d bytes",
+					fileInfo.Size(), MaxReadSize)), nil
+			}
 
-	notifyLSPs(ctx, v.lspClients, filePath)
-	output := "<file>\n"
-	// Format the output with line numbers
-	output += addLineNumbers(content, params.Offset+1)
+			// Set default limit if not provided
+			if params.Limit <= 0 {
+				params.Limit = DefaultReadLimit
+			}
 
-	// Add a note if the content was truncated
-	if lineCount > params.Offset+len(strings.Split(content, "\n")) {
-		output += fmt.Sprintf("\n\n(File has more lines. Use 'offset' parameter to read beyond line %d)",
-			params.Offset+len(strings.Split(content, "\n")))
-	}
-	output += "\n</file>\n"
-	output += getDiagnostics(filePath, v.lspClients)
-	recordFileRead(filePath)
-	return WithResponseMetadata(
-		NewTextResponse(output),
-		ViewResponseMetadata{
-			FilePath: filePath,
-			Content:  content,
-		},
-	), nil
+			// Check if it's an image file
+			isImage, imageType := isImageFile(filePath)
+			// TODO: handle images
+			if isImage {
+				return ai.NewTextErrorResponse(fmt.Sprintf("This is an image file of type: %s\n", imageType)), nil
+			}
+
+			// Read the file content
+			content, lineCount, err := readTextFile(filePath, params.Offset, params.Limit)
+			isValidUt8 := utf8.ValidString(content)
+			if !isValidUt8 {
+				return ai.NewTextErrorResponse("File content is not valid UTF-8"), nil
+			}
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error reading file: %w", err)
+			}
+
+			notifyLSPs(ctx, lspClients, filePath)
+			output := "<file>\n"
+			// Format the output with line numbers
+			output += addLineNumbers(content, params.Offset+1)
+
+			// Add a note if the content was truncated
+			if lineCount > params.Offset+len(strings.Split(content, "\n")) {
+				output += fmt.Sprintf("\n\n(File has more lines. Use 'offset' parameter to read beyond line %d)",
+					params.Offset+len(strings.Split(content, "\n")))
+			}
+			output += "\n</file>\n"
+			output += getDiagnostics(filePath, lspClients)
+			recordFileRead(filePath)
+			return ai.WithResponseMetadata(
+				ai.NewTextResponse(output),
+				ViewResponseMetadata{
+					FilePath: filePath,
+					Content:  content,
+				},
+			), nil
+		})
 }
 
 func addLineNumbers(content string, startLine int) string {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -13,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/fsext"
+	"github.com/charmbracelet/fantasy/ai"
 )
 
 const GlobToolName = "glob"
@@ -21,8 +21,8 @@ const GlobToolName = "glob"
 var globDescription []byte
 
 type GlobParams struct {
-	Pattern string `json:"pattern"`
-	Path    string `json:"path"`
+	Pattern string `json:"pattern" description:"The glob pattern to match files against"`
+	Path    string `json:"path" description:"The directory to search in. Defaults to the current working directory."`
 }
 
 type GlobResponseMetadata struct {
@@ -30,75 +30,43 @@ type GlobResponseMetadata struct {
 	Truncated     bool `json:"truncated"`
 }
 
-type globTool struct {
-	workingDir string
-}
+func NewGlobTool(workingDir string) ai.AgentTool {
+	return ai.NewAgentTool(
+		GlobToolName,
+		string(globDescription),
+		func(ctx context.Context, params GlobParams, call ai.ToolCall) (ai.ToolResponse, error) {
+			if params.Pattern == "" {
+				return ai.NewTextErrorResponse("pattern is required"), nil
+			}
 
-func NewGlobTool(workingDir string) BaseTool {
-	return &globTool{
-		workingDir: workingDir,
-	}
-}
+			searchPath := params.Path
+			if searchPath == "" {
+				searchPath = workingDir
+			}
 
-func (g *globTool) Name() string {
-	return GlobToolName
-}
+			files, truncated, err := globFiles(ctx, params.Pattern, searchPath, 100)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error finding files: %w", err)
+			}
 
-func (g *globTool) Info() ToolInfo {
-	return ToolInfo{
-		Name:        GlobToolName,
-		Description: string(globDescription),
-		Parameters: map[string]any{
-			"pattern": map[string]any{
-				"type":        "string",
-				"description": "The glob pattern to match files against",
-			},
-			"path": map[string]any{
-				"type":        "string",
-				"description": "The directory to search in. Defaults to the current working directory.",
-			},
-		},
-		Required: []string{"pattern"},
-	}
-}
+			var output string
+			if len(files) == 0 {
+				output = "No files found"
+			} else {
+				output = strings.Join(files, "\n")
+				if truncated {
+					output += "\n\n(Results are truncated. Consider using a more specific path or pattern.)"
+				}
+			}
 
-func (g *globTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
-	var params GlobParams
-	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
-		return NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
-	}
-
-	if params.Pattern == "" {
-		return NewTextErrorResponse("pattern is required"), nil
-	}
-
-	searchPath := params.Path
-	if searchPath == "" {
-		searchPath = g.workingDir
-	}
-
-	files, truncated, err := globFiles(ctx, params.Pattern, searchPath, 100)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error finding files: %w", err)
-	}
-
-	var output string
-	if len(files) == 0 {
-		output = "No files found"
-	} else {
-		output = strings.Join(files, "\n")
-		if truncated {
-			output += "\n\n(Results are truncated. Consider using a more specific path or pattern.)"
-		}
-	}
-
-	return WithResponseMetadata(
-		NewTextResponse(output),
-		GlobResponseMetadata{
-			NumberOfFiles: len(files),
-			Truncated:     truncated,
-		},
-	), nil
+			return ai.WithResponseMetadata(
+				ai.NewTextResponse(output),
+				GlobResponseMetadata{
+					NumberOfFiles: len(files),
+					Truncated:     truncated,
+				},
+			), nil
+		})
 }
 
 func globFiles(ctx context.Context, pattern, searchPath string, limit int) ([]string, bool, error) {

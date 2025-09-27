@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,11 +10,12 @@ import (
 
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/fantasy/ai"
 )
 
 type LSParams struct {
-	Path   string   `json:"path"`
-	Ignore []string `json:"ignore"`
+	Path   string   `json:"path" description:"The path to the directory to list (defaults to current working directory)"`
+	Ignore []string `json:"ignore,omitempty" description:"List of glob patterns to ignore"`
 }
 
 type LSPermissionsParams struct {
@@ -35,11 +35,6 @@ type LSResponseMetadata struct {
 	Truncated     bool `json:"truncated"`
 }
 
-type lsTool struct {
-	workingDir  string
-	permissions permission.Service
-}
-
 const (
 	LSToolName = "ls"
 	MaxLSFiles = 1000
@@ -48,113 +43,81 @@ const (
 //go:embed ls.md
 var lsDescription []byte
 
-func NewLsTool(permissions permission.Service, workingDir string) BaseTool {
-	return &lsTool{
-		workingDir:  workingDir,
-		permissions: permissions,
-	}
-}
+func NewLsTool(permissions permission.Service, workingDir string) ai.AgentTool {
+	return ai.NewAgentTool(
+		LSToolName,
+		string(lsDescription),
+		func(ctx context.Context, params LSParams, call ai.ToolCall) (ai.ToolResponse, error) {
+			searchPath := params.Path
+			if searchPath == "" {
+				searchPath = workingDir
+			}
 
-func (l *lsTool) Name() string {
-	return LSToolName
-}
+			var err error
+			searchPath, err = fsext.Expand(searchPath)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error expanding path: %w", err)
+			}
 
-func (l *lsTool) Info() ToolInfo {
-	return ToolInfo{
-		Name:        LSToolName,
-		Description: string(lsDescription),
-		Parameters: map[string]any{
-			"path": map[string]any{
-				"type":        "string",
-				"description": "The path to the directory to list (defaults to current working directory)",
-			},
-			"ignore": map[string]any{
-				"type":        "array",
-				"description": "List of glob patterns to ignore",
-				"items": map[string]any{
-					"type": "string",
+			if !filepath.IsAbs(searchPath) {
+				searchPath = filepath.Join(workingDir, searchPath)
+			}
+
+			// Check if directory is outside working directory and request permission if needed
+			absWorkingDir, err := filepath.Abs(workingDir)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error resolving working directory: %w", err)
+			}
+
+			absSearchPath, err := filepath.Abs(searchPath)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error resolving search path: %w", err)
+			}
+
+			relPath, err := filepath.Rel(absWorkingDir, absSearchPath)
+			if err != nil || strings.HasPrefix(relPath, "..") {
+				// Directory is outside working directory, request permission
+				sessionID, messageID := GetContextValues(ctx)
+				if sessionID == "" || messageID == "" {
+					return ai.ToolResponse{}, fmt.Errorf("session ID and message ID are required for accessing directories outside working directory")
+				}
+
+				granted := permissions.Request(
+					permission.CreatePermissionRequest{
+						SessionID:   sessionID,
+						Path:        absSearchPath,
+						ToolCallID:  call.ID,
+						ToolName:    LSToolName,
+						Action:      "list",
+						Description: fmt.Sprintf("List directory outside working directory: %s", absSearchPath),
+						Params:      LSPermissionsParams(params),
+					},
+				)
+
+				if !granted {
+					return ai.ToolResponse{}, permission.ErrorPermissionDenied
+				}
+			}
+
+			output, err := ListDirectoryTree(searchPath, params.Ignore)
+			if err != nil {
+				return ai.ToolResponse{}, err
+			}
+
+			// Get file count for metadata
+			files, truncated, err := fsext.ListDirectory(searchPath, params.Ignore, MaxLSFiles)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error listing directory for metadata: %w", err)
+			}
+
+			return ai.WithResponseMetadata(
+				ai.NewTextResponse(output),
+				LSResponseMetadata{
+					NumberOfFiles: len(files),
+					Truncated:     truncated,
 				},
-			},
-		},
-		Required: []string{"path"},
-	}
-}
-
-func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
-	var params LSParams
-	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
-		return NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
-	}
-
-	searchPath := params.Path
-	if searchPath == "" {
-		searchPath = l.workingDir
-	}
-
-	var err error
-	searchPath, err = fsext.Expand(searchPath)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error expanding path: %w", err)
-	}
-
-	if !filepath.IsAbs(searchPath) {
-		searchPath = filepath.Join(l.workingDir, searchPath)
-	}
-
-	// Check if directory is outside working directory and request permission if needed
-	absWorkingDir, err := filepath.Abs(l.workingDir)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error resolving working directory: %w", err)
-	}
-
-	absSearchPath, err := filepath.Abs(searchPath)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error resolving search path: %w", err)
-	}
-
-	relPath, err := filepath.Rel(absWorkingDir, absSearchPath)
-	if err != nil || strings.HasPrefix(relPath, "..") {
-		// Directory is outside working directory, request permission
-		sessionID, messageID := GetContextValues(ctx)
-		if sessionID == "" || messageID == "" {
-			return ToolResponse{}, fmt.Errorf("session ID and message ID are required for accessing directories outside working directory")
-		}
-
-		granted := l.permissions.Request(
-			permission.CreatePermissionRequest{
-				SessionID:   sessionID,
-				Path:        absSearchPath,
-				ToolCallID:  call.ID,
-				ToolName:    LSToolName,
-				Action:      "list",
-				Description: fmt.Sprintf("List directory outside working directory: %s", absSearchPath),
-				Params:      LSPermissionsParams(params),
-			},
-		)
-
-		if !granted {
-			return ToolResponse{}, permission.ErrorPermissionDenied
-		}
-	}
-
-	output, err := ListDirectoryTree(searchPath, params.Ignore)
-	if err != nil {
-		return ToolResponse{}, err
-	}
-
-	// Get file count for metadata
-	files, truncated, err := fsext.ListDirectory(searchPath, params.Ignore, MaxLSFiles)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error listing directory for metadata: %w", err)
-	}
-
-	return WithResponseMetadata(
-		NewTextResponse(output),
-		LSResponseMetadata{
-			NumberOfFiles: len(files),
-			Truncated:     truncated,
-		},
-	), nil
+			), nil
+		})
 }
 
 func ListDirectoryTree(searchPath string, ignore []string) (string, error) {

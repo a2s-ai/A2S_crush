@@ -1,4 +1,4 @@
-package agent
+package tools
 
 import (
 	"cmp"
@@ -16,10 +16,10 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/home"
-	"github.com/charmbracelet/crush/internal/llm/tools"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/version"
+	"github.com/charmbracelet/fantasy/ai"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -78,7 +78,7 @@ type MCPClientInfo struct {
 
 var (
 	mcpToolsOnce sync.Once
-	mcpTools     []tools.BaseTool
+	mcpTools     []ai.AgentTool
 	mcpClients   = csync.NewMap[string, *client.Client]()
 	mcpStates    = csync.NewMap[string, MCPClientInfo]()
 	mcpBroker    = pubsub.NewBroker[MCPEvent]()
@@ -95,7 +95,7 @@ func (b *McpTool) Name() string {
 	return fmt.Sprintf("mcp_%s_%s", b.mcpName, b.tool.Name)
 }
 
-func (b *McpTool) Info() tools.ToolInfo {
+func (b *McpTool) Info() ai.ToolInfo {
 	required := b.tool.InputSchema.Required
 	if required == nil {
 		required = make([]string, 0)
@@ -104,7 +104,7 @@ func (b *McpTool) Info() tools.ToolInfo {
 	if parameters == nil {
 		parameters = make(map[string]any)
 	}
-	return tools.ToolInfo{
+	return ai.ToolInfo{
 		Name:        fmt.Sprintf("mcp_%s_%s", b.mcpName, b.tool.Name),
 		Description: b.tool.Description,
 		Parameters:  parameters,
@@ -112,15 +112,15 @@ func (b *McpTool) Info() tools.ToolInfo {
 	}
 }
 
-func runTool(ctx context.Context, name, toolName string, input string) (tools.ToolResponse, error) {
+func runTool(ctx context.Context, name, toolName string, input string) (ai.ToolResponse, error) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return tools.NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
+		return ai.NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
 	}
 
 	c, err := getOrRenewClient(ctx, name)
 	if err != nil {
-		return tools.NewTextErrorResponse(err.Error()), nil
+		return ai.NewTextErrorResponse(err.Error()), nil
 	}
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
@@ -129,7 +129,7 @@ func runTool(ctx context.Context, name, toolName string, input string) (tools.To
 		},
 	})
 	if err != nil {
-		return tools.NewTextErrorResponse(err.Error()), nil
+		return ai.NewTextErrorResponse(err.Error()), nil
 	}
 
 	output := make([]string, 0, len(result.Content))
@@ -140,7 +140,7 @@ func runTool(ctx context.Context, name, toolName string, input string) (tools.To
 			output = append(output, fmt.Sprintf("%v", v))
 		}
 	}
-	return tools.NewTextResponse(strings.Join(output, "\n")), nil
+	return ai.NewTextResponse(strings.Join(output, "\n")), nil
 }
 
 func getOrRenewClient(ctx context.Context, name string) (*client.Client, error) {
@@ -172,10 +172,10 @@ func getOrRenewClient(ctx context.Context, name string) (*client.Client, error) 
 	return c, nil
 }
 
-func (b *McpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolResponse, error) {
-	sessionID, messageID := tools.GetContextValues(ctx)
+func (b *McpTool) Run(ctx context.Context, params ai.ToolCall) (ai.ToolResponse, error) {
+	sessionID, messageID := GetContextValues(ctx)
 	if sessionID == "" || messageID == "" {
-		return tools.ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a new file")
+		return ai.ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 	permissionDescription := fmt.Sprintf("execute %s with the following parameters:", b.Info().Name)
 	p := b.permissions.Request(
@@ -190,13 +190,13 @@ func (b *McpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 		},
 	)
 	if !p {
-		return tools.ToolResponse{}, permission.ErrorPermissionDenied
+		return ai.ToolResponse{}, permission.ErrorPermissionDenied
 	}
 
 	return runTool(ctx, b.mcpName, b.tool.Name, params.Input)
 }
 
-func getTools(ctx context.Context, name string, permissions permission.Service, c *client.Client, workingDir string) []tools.BaseTool {
+func getTools(ctx context.Context, name string, permissions permission.Service, c *client.Client, workingDir string) []ai.AgentTool {
 	result, err := c.ListTools(ctx, mcp.ListToolsRequest{})
 	if err != nil {
 		slog.Error("error listing tools", "error", err)
@@ -205,7 +205,7 @@ func getTools(ctx context.Context, name string, permissions permission.Service, 
 		mcpClients.Del(name)
 		return nil
 	}
-	mcpTools := make([]tools.BaseTool, 0, len(result.Tools))
+	mcpTools := make([]ai.AgentTool, 0, len(result.Tools))
 	for _, tool := range result.Tools {
 		mcpTools = append(mcpTools, &McpTool{
 			mcpName:     name,
@@ -278,9 +278,9 @@ var mcpInitRequest = mcp.InitializeRequest{
 	},
 }
 
-func doGetMCPTools(ctx context.Context, permissions permission.Service, cfg *config.Config) []tools.BaseTool {
+func GetMCPTools(ctx context.Context, permissions permission.Service, cfg *config.Config) []ai.AgentTool {
 	var wg sync.WaitGroup
-	result := csync.NewSlice[tools.BaseTool]()
+	result := csync.NewSlice[ai.AgentTool]()
 
 	// Initialize states for all configured MCPs
 	for name, m := range cfg.MCP {

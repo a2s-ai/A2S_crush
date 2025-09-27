@@ -1,34 +1,28 @@
-Fetches content from a URL and returns it in the specified format.
+Fetches content from URL and returns it in specified format.
 
-WHEN TO USE THIS TOOL:
+<usage>
+- Provide URL to fetch content from
+- Specify desired output format (text, markdown, or html)
+- Optional timeout for request
+</usage>
 
-- Use when you need to download content from a URL
-- Helpful for retrieving documentation, API responses, or web content
-- Useful for getting external information to assist with tasks
-
-HOW TO USE:
-
-- Provide the URL to fetch content from
-- Specify the desired output format (text, markdown, or html)
-- Optionally set a timeout for the request
-
-FEATURES:
-
-- Supports three output formats: text, markdown, and html
-- Automatically handles HTTP redirects
+<features>
+- Supports three output formats: text, markdown, html
+- Auto-handles HTTP redirects
 - Sets reasonable timeouts to prevent hanging
-- Validates input parameters before making requests
+- Validates input parameters before requests
+</features>
 
-LIMITATIONS:
-
-- Maximum response size is 5MB
+<limitations>
+- Max response size: 5MB
 - Only supports HTTP and HTTPS protocols
 - Cannot handle authentication or cookies
 - Some websites may block automated requests
+</limitations>
 
-TIPS:
-
+<tips>
 - Use text format for plain text content or simple API responses
 - Use markdown format for content that should be rendered with formatting
-- Use html format when you need the raw HTML structure
+- Use html format when you need raw HTML structure
 - Set appropriate timeouts for potentially slow websites
+</tips>

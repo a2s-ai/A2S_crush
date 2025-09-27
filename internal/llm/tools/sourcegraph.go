@@ -10,13 +10,15 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/fantasy/ai"
 )
 
 type SourcegraphParams struct {
-	Query         string `json:"query"`
-	Count         int    `json:"count,omitempty"`
-	ContextWindow int    `json:"context_window,omitempty"`
-	Timeout       int    `json:"timeout,omitempty"`
+	Query         string `json:"query" description:"The Sourcegraph search query"`
+	Count         int    `json:"count,omitempty" description:"Optional number of results to return (default: 10, max: 20)"`
+	ContextWindow int    `json:"context_window,omitempty" description:"The context around the match to return (default: 10 lines)"`
+	Timeout       int    `json:"timeout,omitempty" description:"Optional timeout in seconds (max 120)"`
 }
 
 type SourcegraphResponseMetadata struct {
@@ -24,151 +26,112 @@ type SourcegraphResponseMetadata struct {
 	Truncated       bool `json:"truncated"`
 }
 
-type sourcegraphTool struct {
-	client *http.Client
-}
-
 const SourcegraphToolName = "sourcegraph"
 
 //go:embed sourcegraph.md
 var sourcegraphDescription []byte
 
-func NewSourcegraphTool() BaseTool {
-	return &sourcegraphTool{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
-			},
+func NewSourcegraphTool() ai.AgentTool {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
 		},
 	}
-}
+	return ai.NewAgentTool(
+		SourcegraphToolName,
+		string(sourcegraphDescription),
+		func(ctx context.Context, params SourcegraphParams, call ai.ToolCall) (ai.ToolResponse, error) {
+			if params.Query == "" {
+				return ai.NewTextErrorResponse("Query parameter is required"), nil
+			}
 
-func (t *sourcegraphTool) Name() string {
-	return SourcegraphToolName
-}
+			if params.Count <= 0 {
+				params.Count = 10
+			} else if params.Count > 20 {
+				params.Count = 20 // Limit to 20 results
+			}
 
-func (t *sourcegraphTool) Info() ToolInfo {
-	return ToolInfo{
-		Name:        SourcegraphToolName,
-		Description: string(sourcegraphDescription),
-		Parameters: map[string]any{
-			"query": map[string]any{
-				"type":        "string",
-				"description": "The Sourcegraph search query",
-			},
-			"count": map[string]any{
-				"type":        "number",
-				"description": "Optional number of results to return (default: 10, max: 20)",
-			},
-			"context_window": map[string]any{
-				"type":        "number",
-				"description": "The context around the match to return (default: 10 lines)",
-			},
-			"timeout": map[string]any{
-				"type":        "number",
-				"description": "Optional timeout in seconds (max 120)",
-			},
-		},
-		Required: []string{"query"},
-	}
-}
+			if params.ContextWindow <= 0 {
+				params.ContextWindow = 10 // Default context window
+			}
 
-func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
-	var params SourcegraphParams
-	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
-		return NewTextErrorResponse("Failed to parse sourcegraph parameters: " + err.Error()), nil
-	}
+			// Handle timeout with context
+			requestCtx := ctx
+			if params.Timeout > 0 {
+				maxTimeout := 120 // 2 minutes
+				if params.Timeout > maxTimeout {
+					params.Timeout = maxTimeout
+				}
+				var cancel context.CancelFunc
+				requestCtx, cancel = context.WithTimeout(ctx, time.Duration(params.Timeout)*time.Second)
+				defer cancel()
+			}
 
-	if params.Query == "" {
-		return NewTextErrorResponse("Query parameter is required"), nil
-	}
+			type graphqlRequest struct {
+				Query     string `json:"query"`
+				Variables struct {
+					Query string `json:"query"`
+				} `json:"variables"`
+			}
 
-	if params.Count <= 0 {
-		params.Count = 10
-	} else if params.Count > 20 {
-		params.Count = 20 // Limit to 20 results
-	}
+			request := graphqlRequest{
+				Query: "query Search($query: String!) { search(query: $query, version: V2, patternType: keyword ) { results { matchCount, limitHit, resultCount, approximateResultCount, missing { name }, timedout { name }, indexUnavailable, results { __typename, ... on FileMatch { repository { name }, file { path, url, content }, lineMatches { preview, lineNumber, offsetAndLengths } } } } } }",
+			}
+			request.Variables.Query = params.Query
 
-	if params.ContextWindow <= 0 {
-		params.ContextWindow = 10 // Default context window
-	}
+			graphqlQueryBytes, err := json.Marshal(request)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("failed to marshal GraphQL request: %w", err)
+			}
+			graphqlQuery := string(graphqlQueryBytes)
 
-	// Handle timeout with context
-	requestCtx := ctx
-	if params.Timeout > 0 {
-		maxTimeout := 120 // 2 minutes
-		if params.Timeout > maxTimeout {
-			params.Timeout = maxTimeout
-		}
-		var cancel context.CancelFunc
-		requestCtx, cancel = context.WithTimeout(ctx, time.Duration(params.Timeout)*time.Second)
-		defer cancel()
-	}
+			req, err := http.NewRequestWithContext(
+				requestCtx,
+				"POST",
+				"https://sourcegraph.com/.api/graphql",
+				bytes.NewBuffer([]byte(graphqlQuery)),
+			)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("failed to create request: %w", err)
+			}
 
-	type graphqlRequest struct {
-		Query     string `json:"query"`
-		Variables struct {
-			Query string `json:"query"`
-		} `json:"variables"`
-	}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", "crush/1.0")
 
-	request := graphqlRequest{
-		Query: "query Search($query: String!) { search(query: $query, version: V2, patternType: keyword ) { results { matchCount, limitHit, resultCount, approximateResultCount, missing { name }, timedout { name }, indexUnavailable, results { __typename, ... on FileMatch { repository { name }, file { path, url, content }, lineMatches { preview, lineNumber, offsetAndLengths } } } } } }",
-	}
-	request.Variables.Query = params.Query
+			resp, err := client.Do(req)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("failed to fetch URL: %w", err)
+			}
+			defer resp.Body.Close()
 
-	graphqlQueryBytes, err := json.Marshal(request)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to marshal GraphQL request: %w", err)
-	}
-	graphqlQuery := string(graphqlQueryBytes)
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				if len(body) > 0 {
+					return ai.NewTextErrorResponse(fmt.Sprintf("Request failed with status code: %d, response: %s", resp.StatusCode, string(body))), nil
+				}
 
-	req, err := http.NewRequestWithContext(
-		requestCtx,
-		"POST",
-		"https://sourcegraph.com/.api/graphql",
-		bytes.NewBuffer([]byte(graphqlQuery)),
-	)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to create request: %w", err)
-	}
+				return ai.NewTextErrorResponse(fmt.Sprintf("Request failed with status code: %d", resp.StatusCode)), nil
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("failed to read response body: %w", err)
+			}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "crush/1.0")
+			var result map[string]any
+			if err = json.Unmarshal(body, &result); err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("failed to unmarshal response: %w", err)
+			}
 
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to fetch URL: %w", err)
-	}
-	defer resp.Body.Close()
+			formattedResults, err := formatSourcegraphResults(result, params.ContextWindow)
+			if err != nil {
+				return ai.NewTextErrorResponse("Failed to format results: " + err.Error()), nil
+			}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		if len(body) > 0 {
-			return NewTextErrorResponse(fmt.Sprintf("Request failed with status code: %d, response: %s", resp.StatusCode, string(body))), nil
-		}
-
-		return NewTextErrorResponse(fmt.Sprintf("Request failed with status code: %d", resp.StatusCode)), nil
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	var result map[string]any
-	if err = json.Unmarshal(body, &result); err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	formattedResults, err := formatSourcegraphResults(result, params.ContextWindow)
-	if err != nil {
-		return NewTextErrorResponse("Failed to format results: " + err.Error()), nil
-	}
-
-	return NewTextResponse(formattedResults), nil
+			return ai.NewTextResponse(formattedResults), nil
+		})
 }
 
 func formatSourcegraphResults(result map[string]any, contextWindow int) (string, error) {

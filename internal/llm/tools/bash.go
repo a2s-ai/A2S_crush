@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"strings"
@@ -13,28 +12,27 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/shell"
+	"github.com/charmbracelet/fantasy/ai"
 )
 
 type BashParams struct {
-	Command string `json:"command"`
-	Timeout int    `json:"timeout"`
+	Command     string `json:"command" description:"The command to execute"`
+	Description string `json:"description,omitempty" description:"A brief description of what the command does"`
+	Timeout     int    `json:"timeout,omitempty" description:"Optional timeout in milliseconds (max 600000)"`
 }
 
 type BashPermissionsParams struct {
-	Command string `json:"command"`
-	Timeout int    `json:"timeout"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+	Timeout     int    `json:"timeout"`
 }
 
 type BashResponseMetadata struct {
 	StartTime        int64  `json:"start_time"`
 	EndTime          int64  `json:"end_time"`
 	Output           string `json:"output"`
+	Description      string `json:"description"`
 	WorkingDirectory string `json:"working_directory"`
-}
-type bashTool struct {
-	permissions permission.Service
-	workingDir  string
-	attribution *config.Attribution
 }
 
 const (
@@ -46,20 +44,18 @@ const (
 	BashNoOutput    = "no output"
 )
 
-//go:embed bash.md
-var bashDescription []byte
+//go:embed bash.gotmpl
+var bashDescriptionTmpl []byte
 
 var bashDescriptionTpl = template.Must(
 	template.New("bashDescription").
-		Parse(string(bashDescription)),
+		Parse(string(bashDescriptionTmpl)),
 )
 
 type bashDescriptionData struct {
-	BannedCommands     string
-	MaxOutputLength    int
-	AttributionStep    string
-	AttributionExample string
-	PRAttribution      string
+	BannedCommands  string
+	MaxOutputLength int
+	Attribution     config.Attribution
 }
 
 var bannedCommands = []string{
@@ -135,60 +131,13 @@ var bannedCommands = []string{
 	"ufw",
 }
 
-func (b *bashTool) bashDescription() string {
+func bashDescription(attribution *config.Attribution) string {
 	bannedCommandsStr := strings.Join(bannedCommands, ", ")
-
-	// Build attribution text based on settings
-	var attributionStep, attributionExample, prAttribution string
-
-	// Default to true if attribution is nil (backward compatibility)
-	generatedWith := b.attribution == nil || b.attribution.GeneratedWith
-	coAuthoredBy := b.attribution == nil || b.attribution.CoAuthoredBy
-
-	// Build PR attribution
-	if generatedWith {
-		prAttribution = "💘 Generated with Crush"
-	}
-
-	if generatedWith || coAuthoredBy {
-		var attributionParts []string
-		if generatedWith {
-			attributionParts = append(attributionParts, "💘 Generated with Crush")
-		}
-		if coAuthoredBy {
-			attributionParts = append(attributionParts, "Co-Authored-By: Crush <crush@charm.land>")
-		}
-
-		if len(attributionParts) > 0 {
-			attributionStep = fmt.Sprintf("4. Create the commit with a message ending with:\n%s", strings.Join(attributionParts, "\n"))
-
-			attributionText := strings.Join(attributionParts, "\n ")
-			attributionExample = fmt.Sprintf(`<example>
-git commit -m "$(cat <<'EOF'
- Commit message here.
-
- %s
- EOF
-)"</example>`, attributionText)
-		}
-	}
-
-	if attributionStep == "" {
-		attributionStep = "4. Create the commit with your commit message."
-		attributionExample = `<example>
-git commit -m "$(cat <<'EOF'
- Commit message here.
- EOF
-)"</example>`
-	}
-
 	var out bytes.Buffer
 	if err := bashDescriptionTpl.Execute(&out, bashDescriptionData{
-		BannedCommands:     bannedCommandsStr,
-		MaxOutputLength:    MaxOutputLength,
-		AttributionStep:    attributionStep,
-		AttributionExample: attributionExample,
-		PRAttribution:      prAttribution,
+		BannedCommands:  bannedCommandsStr,
+		MaxOutputLength: MaxOutputLength,
+		Attribution:     *attribution,
 	}); err != nil {
 		// this should never happen.
 		panic("failed to execute bash description template: " + err.Error())
@@ -228,150 +177,121 @@ func blockFuncs() []shell.BlockFunc {
 	}
 }
 
-func NewBashTool(permission permission.Service, workingDir string, attribution *config.Attribution) BaseTool {
+func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution) ai.AgentTool {
 	// Set up command blocking on the persistent shell
 	persistentShell := shell.GetPersistentShell(workingDir)
 	persistentShell.SetBlockFuncs(blockFuncs())
-
-	return &bashTool{
-		permissions: permission,
-		workingDir:  workingDir,
-		attribution: attribution,
-	}
-}
-
-func (b *bashTool) Name() string {
-	return BashToolName
-}
-
-func (b *bashTool) Info() ToolInfo {
-	return ToolInfo{
-		Name:        BashToolName,
-		Description: b.bashDescription(),
-		Parameters: map[string]any{
-			"command": map[string]any{
-				"type":        "string",
-				"description": "The command to execute",
-			},
-			"timeout": map[string]any{
-				"type":        "number",
-				"description": "Optional timeout in milliseconds (max 600000)",
-			},
-		},
-		Required: []string{"command"},
-	}
-}
-
-func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
-	var params BashParams
-	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
-		return NewTextErrorResponse("invalid parameters"), nil
-	}
-
-	if params.Timeout > MaxTimeout {
-		params.Timeout = MaxTimeout
-	} else if params.Timeout <= 0 {
-		params.Timeout = DefaultTimeout
-	}
-
-	if params.Command == "" {
-		return NewTextErrorResponse("missing command"), nil
-	}
-
-	isSafeReadOnly := false
-	cmdLower := strings.ToLower(params.Command)
-
-	for _, safe := range safeCommands {
-		if strings.HasPrefix(cmdLower, safe) {
-			if len(cmdLower) == len(safe) || cmdLower[len(safe)] == ' ' || cmdLower[len(safe)] == '-' {
-				isSafeReadOnly = true
-				break
+	return ai.NewAgentTool(
+		BashToolName,
+		string(bashDescription(attribution)),
+		func(ctx context.Context, params BashParams, call ai.ToolCall) (ai.ToolResponse, error) {
+			if params.Timeout > MaxTimeout {
+				params.Timeout = MaxTimeout
+			} else if params.Timeout <= 0 {
+				params.Timeout = DefaultTimeout
 			}
-		}
-	}
 
-	sessionID, messageID := GetContextValues(ctx)
-	if sessionID == "" || messageID == "" {
-		return ToolResponse{}, fmt.Errorf("session ID and message ID are required for executing shell command")
-	}
-	if !isSafeReadOnly {
-		shell := shell.GetPersistentShell(b.workingDir)
-		p := b.permissions.Request(
-			permission.CreatePermissionRequest{
-				SessionID:   sessionID,
-				Path:        shell.GetWorkingDir(),
-				ToolCallID:  call.ID,
-				ToolName:    BashToolName,
-				Action:      "execute",
-				Description: fmt.Sprintf("Execute command: %s", params.Command),
-				Params: BashPermissionsParams{
-					Command: params.Command,
-				},
-			},
-		)
-		if !p {
-			return ToolResponse{}, permission.ErrorPermissionDenied
-		}
-	}
-	startTime := time.Now()
-	if params.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(params.Timeout)*time.Millisecond)
-		defer cancel()
-	}
+			if params.Command == "" {
+				return ai.NewTextErrorResponse("missing command"), nil
+			}
 
-	persistentShell := shell.GetPersistentShell(b.workingDir)
-	stdout, stderr, err := persistentShell.Exec(ctx, params.Command)
+			isSafeReadOnly := false
+			cmdLower := strings.ToLower(params.Command)
 
-	// Get the current working directory after command execution
-	currentWorkingDir := persistentShell.GetWorkingDir()
-	interrupted := shell.IsInterrupt(err)
-	exitCode := shell.ExitCode(err)
-	if exitCode == 0 && !interrupted && err != nil {
-		return ToolResponse{}, fmt.Errorf("error executing command: %w", err)
-	}
+			for _, safe := range safeCommands {
+				if strings.HasPrefix(cmdLower, safe) {
+					if len(cmdLower) == len(safe) || cmdLower[len(safe)] == ' ' || cmdLower[len(safe)] == '-' {
+						isSafeReadOnly = true
+						break
+					}
+				}
+			}
 
-	stdout = truncateOutput(stdout)
-	stderr = truncateOutput(stderr)
+			sessionID, messageID := GetContextValues(ctx)
+			if sessionID == "" || messageID == "" {
+				return ai.ToolResponse{}, fmt.Errorf("session ID and message ID are required for executing shell command")
+			}
+			if !isSafeReadOnly {
+				shell := shell.GetPersistentShell(workingDir)
+				p := permissions.Request(
+					permission.CreatePermissionRequest{
+						SessionID:   sessionID,
+						Path:        shell.GetWorkingDir(),
+						ToolCallID:  call.ID,
+						ToolName:    BashToolName,
+						Action:      "execute",
+						Description: fmt.Sprintf("Execute command: %s", params.Command),
+						Params: BashPermissionsParams{
+							Command:     params.Command,
+							Description: params.Description,
+						},
+					},
+				)
+				if !p {
+					return ai.ToolResponse{}, permission.ErrorPermissionDenied
+				}
+			}
+			startTime := time.Now()
+			if params.Timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, time.Duration(params.Timeout)*time.Millisecond)
+				defer cancel()
+			}
 
-	errorMessage := stderr
-	if errorMessage == "" && err != nil {
-		errorMessage = err.Error()
-	}
+			persistentShell := shell.GetPersistentShell(workingDir)
+			stdout, stderr, err := persistentShell.Exec(ctx, params.Command)
 
-	if interrupted {
-		if errorMessage != "" {
-			errorMessage += "\n"
-		}
-		errorMessage += "Command was aborted before completion"
-	} else if exitCode != 0 {
-		if errorMessage != "" {
-			errorMessage += "\n"
-		}
-		errorMessage += fmt.Sprintf("Exit code %d", exitCode)
-	}
+			// Get the current working directory after command execution
+			currentWorkingDir := persistentShell.GetWorkingDir()
+			interrupted := shell.IsInterrupt(err)
+			exitCode := shell.ExitCode(err)
+			if exitCode == 0 && !interrupted && err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error executing command: %w", err)
+			}
 
-	hasBothOutputs := stdout != "" && stderr != ""
+			stdout = truncateOutput(stdout)
+			stderr = truncateOutput(stderr)
 
-	if hasBothOutputs {
-		stdout += "\n"
-	}
+			errorMessage := stderr
+			if errorMessage == "" && err != nil {
+				errorMessage = err.Error()
+			}
 
-	if errorMessage != "" {
-		stdout += "\n" + errorMessage
-	}
+			if interrupted {
+				if errorMessage != "" {
+					errorMessage += "\n"
+				}
+				errorMessage += "Command was aborted before completion"
+			} else if exitCode != 0 {
+				if errorMessage != "" {
+					errorMessage += "\n"
+				}
+				errorMessage += fmt.Sprintf("Exit code %d", exitCode)
+			}
 
-	metadata := BashResponseMetadata{
-		StartTime:        startTime.UnixMilli(),
-		EndTime:          time.Now().UnixMilli(),
-		Output:           stdout,
-		WorkingDirectory: currentWorkingDir,
-	}
-	if stdout == "" {
-		return WithResponseMetadata(NewTextResponse(BashNoOutput), metadata), nil
-	}
-	stdout += fmt.Sprintf("\n\n<cwd>%s</cwd>", currentWorkingDir)
-	return WithResponseMetadata(NewTextResponse(stdout), metadata), nil
+			hasBothOutputs := stdout != "" && stderr != ""
+
+			if hasBothOutputs {
+				stdout += "\n"
+			}
+
+			if errorMessage != "" {
+				stdout += "\n" + errorMessage
+			}
+
+			metadata := BashResponseMetadata{
+				StartTime:        startTime.UnixMilli(),
+				EndTime:          time.Now().UnixMilli(),
+				Output:           stdout,
+				Description:      params.Description,
+				WorkingDirectory: currentWorkingDir,
+			}
+			if stdout == "" {
+				return ai.WithResponseMetadata(ai.NewTextResponse(BashNoOutput), metadata), nil
+			}
+			stdout += fmt.Sprintf("\n\n<cwd>%s</cwd>", currentWorkingDir)
+			return ai.WithResponseMetadata(ai.NewTextResponse(stdout), metadata), nil
+		})
 }
 
 func truncateOutput(content string) string {

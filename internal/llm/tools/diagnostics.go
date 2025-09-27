@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -12,15 +11,12 @@ import (
 
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/lsp"
+	"github.com/charmbracelet/fantasy/ai"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 )
 
 type DiagnosticsParams struct {
-	FilePath string `json:"file_path"`
-}
-
-type diagnosticsTool struct {
-	lspClients *csync.Map[string, *lsp.Client]
+	FilePath string `json:"file_path,omitempty" description:"The path to the file to get diagnostics for (leave w empty for project diagnostics)"`
 }
 
 const DiagnosticsToolName = "diagnostics"
@@ -28,42 +24,18 @@ const DiagnosticsToolName = "diagnostics"
 //go:embed diagnostics.md
 var diagnosticsDescription []byte
 
-func NewDiagnosticsTool(lspClients *csync.Map[string, *lsp.Client]) BaseTool {
-	return &diagnosticsTool{
-		lspClients,
-	}
-}
-
-func (b *diagnosticsTool) Name() string {
-	return DiagnosticsToolName
-}
-
-func (b *diagnosticsTool) Info() ToolInfo {
-	return ToolInfo{
-		Name:        DiagnosticsToolName,
-		Description: string(diagnosticsDescription),
-		Parameters: map[string]any{
-			"file_path": map[string]any{
-				"type":        "string",
-				"description": "The path to the file to get diagnostics for (leave w empty for project diagnostics)",
-			},
-		},
-		Required: []string{},
-	}
-}
-
-func (b *diagnosticsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
-	var params DiagnosticsParams
-	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
-		return NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
-	}
-
-	if b.lspClients.Len() == 0 {
-		return NewTextErrorResponse("no LSP clients available"), nil
-	}
-	notifyLSPs(ctx, b.lspClients, params.FilePath)
-	output := getDiagnostics(params.FilePath, b.lspClients)
-	return NewTextResponse(output), nil
+func NewDiagnosticsTool(lspClients *csync.Map[string, *lsp.Client]) ai.AgentTool {
+	return ai.NewAgentTool(
+		DiagnosticsToolName,
+		string(diagnosticsDescription),
+		func(ctx context.Context, params DiagnosticsParams, call ai.ToolCall) (ai.ToolResponse, error) {
+			if lspClients.Len() == 0 {
+				return ai.NewTextErrorResponse("no LSP clients available"), nil
+			}
+			notifyLSPs(ctx, lspClients, params.FilePath)
+			output := getDiagnostics(params.FilePath, lspClients)
+			return ai.NewTextResponse(output), nil
+		})
 }
 
 func notifyLSPs(ctx context.Context, lsps *csync.Map[string, *lsp.Client], filepath string) {

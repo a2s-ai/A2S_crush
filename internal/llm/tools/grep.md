@@ -1,54 +1,52 @@
-Fast content search tool that finds files containing specific text or patterns, returning matching file paths sorted by modification time (newest first).
+Fast content search tool that finds files containing specific text/patterns, returning matching paths sorted by modification time (newest first).
 
-WHEN TO USE THIS TOOL:
+<usage>
+- Provide regex pattern to search within file contents
+- Set literal_text=true for exact text with special characters (recommended for non-regex users)
+- Optional starting directory (defaults to current working directory)
+- Optional include pattern to filter which files to search
+- Results sorted with most recently modified files first
+</usage>
 
-- Use when you need to find files containing specific text or patterns
-- Great for searching code bases for function names, variable declarations, or error messages
-- Useful for finding all files that use a particular API or pattern
+<regex_syntax>
+When literal_text=false (supports standard regex):
 
-HOW TO USE:
-
-- Provide a regex pattern to search for within file contents
-- Set literal_text=true if you want to search for the exact text with special characters (recommended for non-regex users)
-- Optionally specify a starting directory (defaults to current working directory)
-- Optionally provide an include pattern to filter which files to search
-- Results are sorted with most recently modified files first
-
-REGEX PATTERN SYNTAX (when literal_text=false):
-
-- Supports standard regular expression syntax
-- 'function' searches for the literal text "function"
+- 'function' searches for literal text "function"
 - 'log\..\*Error' finds text starting with "log." and ending with "Error"
 - 'import\s+.\*\s+from' finds import statements in JavaScript/TypeScript
+  </regex_syntax>
 
-COMMON INCLUDE PATTERN EXAMPLES:
+<include_patterns>
 
 - '\*.js' - Only search JavaScript files
 - '\*.{ts,tsx}' - Only search TypeScript files
 - '\*.go' - Only search Go files
+  </include_patterns>
 
-LIMITATIONS:
-
-- Results are limited to 100 files (newest first)
-- Performance depends on the number of files being searched
+<limitations>
+- Results limited to 100 files (newest first)
+- Performance depends on number of files searched
 - Very large binary files may be skipped
-- Hidden files (starting with '.') are skipped
+- Hidden files (starting with '.') skipped
+</limitations>
 
-IGNORE FILE SUPPORT:
+<ignore_support>
 
-- Respects .gitignore patterns to skip ignored files and directories
+- Respects .gitignore patterns to skip ignored files/directories
 - Respects .crushignore patterns for additional ignore rules
-- Both ignore files are automatically detected in the search root directory
+- Both ignore files auto-detected in search root directory
+  </ignore_support>
 
-CROSS-PLATFORM NOTES:
+<cross_platform>
 
-- Uses ripgrep (rg) command if available for better performance
-- Falls back to built-in Go implementation if ripgrep is not available
-- File paths are normalized automatically for cross-platform compatibility
+- Uses ripgrep (rg) if available for better performance
+- Falls back to Go implementation if ripgrep unavailable
+- File paths normalized automatically for compatibility
+  </cross_platform>
 
-TIPS:
-
-- For faster, more targeted searches, first use Glob to find relevant files, then use Grep
-- When doing iterative exploration that may require multiple rounds of searching, consider using the Agent tool instead
-- Always check if results are truncated and refine your search pattern if needed
-- Use literal_text=true when searching for exact text containing special characters like dots, parentheses, etc.
+<tips>
+- For faster searches: use Glob to find relevant files first, then Grep
+- For iterative exploration requiring multiple searches, consider Agent tool
+- Check if results truncated and refine search pattern if needed
+- Use literal_text=true for exact text with special characters (dots, parentheses, etc.)
+</tips>

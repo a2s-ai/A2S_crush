@@ -1,34 +1,28 @@
-Downloads binary data from a URL and saves it to a local file.
+Downloads binary data from URL and saves to local file.
 
-WHEN TO USE THIS TOOL:
+<usage>
+- Provide URL to download from
+- Specify local file path where content should be saved
+- Optional timeout for request
+</usage>
 
-- Use when you need to download files, images, or other binary data from URLs
-- Helpful for downloading assets, documents, or any file type
-- Useful for saving remote content locally for processing or storage
-
-HOW TO USE:
-
-- Provide the URL to download from
-- Specify the local file path where the content should be saved
-- Optionally set a timeout for the request
-
-FEATURES:
-
+<features>
 - Downloads any file type (binary or text)
-- Automatically creates parent directories if they don't exist
+- Auto-creates parent directories if missing
 - Handles large files efficiently with streaming
 - Sets reasonable timeouts to prevent hanging
-- Validates input parameters before making requests
+- Validates input parameters before requests
+</features>
 
-LIMITATIONS:
-
-- Maximum file size is 100MB
+<limitations>
+- Max file size: 100MB
 - Only supports HTTP and HTTPS protocols
 - Cannot handle authentication or cookies
 - Some websites may block automated requests
 - Will overwrite existing files without warning
+</limitations>
 
-TIPS:
-
-- Use absolute paths or paths relative to the working directory
+<tips>
+- Use absolute paths or paths relative to working directory
 - Set appropriate timeouts for large files or slow connections
+</tips>

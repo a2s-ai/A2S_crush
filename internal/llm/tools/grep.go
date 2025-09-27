@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/fsext"
+	"github.com/charmbracelet/fantasy/ai"
 )
 
 // regexCache provides thread-safe caching of compiled regex patterns
@@ -71,10 +71,10 @@ var (
 )
 
 type GrepParams struct {
-	Pattern     string `json:"pattern"`
-	Path        string `json:"path"`
-	Include     string `json:"include"`
-	LiteralText bool   `json:"literal_text"`
+	Pattern     string `json:"pattern" description:"The regex pattern to search for in file contents"`
+	Path        string `json:"path" description:"The directory to search in. Defaults to the current working directory."`
+	Include     string `json:"include" description:"File pattern to include in the search (e.g. \"*.js\", \"*.{ts,tsx}\")"`
+	LiteralText bool   `json:"literal_text" description:"If true, the pattern will be treated as literal text with special regex characters escaped. Default is false."`
 }
 
 type grepMatch struct {
@@ -89,49 +89,71 @@ type GrepResponseMetadata struct {
 	Truncated       bool `json:"truncated"`
 }
 
-type grepTool struct {
-	workingDir string
-}
-
 const GrepToolName = "grep"
 
 //go:embed grep.md
 var grepDescription []byte
 
-func NewGrepTool(workingDir string) BaseTool {
-	return &grepTool{
-		workingDir: workingDir,
-	}
-}
+func NewGrepTool(workingDir string) ai.AgentTool {
+	return ai.NewAgentTool(
+		GrepToolName,
+		string(grepDescription),
+		func(ctx context.Context, params GrepParams, call ai.ToolCall) (ai.ToolResponse, error) {
+			if params.Pattern == "" {
+				return ai.NewTextErrorResponse("pattern is required"), nil
+			}
 
-func (g *grepTool) Name() string {
-	return GrepToolName
-}
+			// If literal_text is true, escape the pattern
+			searchPattern := params.Pattern
+			if params.LiteralText {
+				searchPattern = escapeRegexPattern(params.Pattern)
+			}
 
-func (g *grepTool) Info() ToolInfo {
-	return ToolInfo{
-		Name:        GrepToolName,
-		Description: string(grepDescription),
-		Parameters: map[string]any{
-			"pattern": map[string]any{
-				"type":        "string",
-				"description": "The regex pattern to search for in file contents",
-			},
-			"path": map[string]any{
-				"type":        "string",
-				"description": "The directory to search in. Defaults to the current working directory.",
-			},
-			"include": map[string]any{
-				"type":        "string",
-				"description": "File pattern to include in the search (e.g. \"*.js\", \"*.{ts,tsx}\")",
-			},
-			"literal_text": map[string]any{
-				"type":        "boolean",
-				"description": "If true, the pattern will be treated as literal text with special regex characters escaped. Default is false.",
-			},
-		},
-		Required: []string{"pattern"},
-	}
+			searchPath := params.Path
+			if searchPath == "" {
+				searchPath = workingDir
+			}
+
+			matches, truncated, err := searchFiles(ctx, searchPattern, searchPath, params.Include, 100)
+			if err != nil {
+				return ai.ToolResponse{}, fmt.Errorf("error searching files: %w", err)
+			}
+
+			var output strings.Builder
+			if len(matches) == 0 {
+				output.WriteString("No files found")
+			} else {
+				fmt.Fprintf(&output, "Found %d matches\n", len(matches))
+
+				currentFile := ""
+				for _, match := range matches {
+					if currentFile != match.path {
+						if currentFile != "" {
+							output.WriteString("\n")
+						}
+						currentFile = match.path
+						fmt.Fprintf(&output, "%s:\n", match.path)
+					}
+					if match.lineNum > 0 {
+						fmt.Fprintf(&output, "  Line %d: %s\n", match.lineNum, match.lineText)
+					} else {
+						fmt.Fprintf(&output, "  %s\n", match.path)
+					}
+				}
+
+				if truncated {
+					output.WriteString("\n(Results are truncated. Consider using a more specific path or pattern.)")
+				}
+			}
+
+			return ai.WithResponseMetadata(
+				ai.NewTextResponse(output.String()),
+				GrepResponseMetadata{
+					NumberOfMatches: len(matches),
+					Truncated:       truncated,
+				},
+			), nil
+		})
 }
 
 // escapeRegexPattern escapes special regex characters so they're treated as literal characters
@@ -144,68 +166,6 @@ func escapeRegexPattern(pattern string) string {
 	}
 
 	return escaped
-}
-
-func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
-	var params GrepParams
-	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
-		return NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
-	}
-
-	if params.Pattern == "" {
-		return NewTextErrorResponse("pattern is required"), nil
-	}
-
-	// If literal_text is true, escape the pattern
-	searchPattern := params.Pattern
-	if params.LiteralText {
-		searchPattern = escapeRegexPattern(params.Pattern)
-	}
-
-	searchPath := params.Path
-	if searchPath == "" {
-		searchPath = g.workingDir
-	}
-
-	matches, truncated, err := searchFiles(ctx, searchPattern, searchPath, params.Include, 100)
-	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error searching files: %w", err)
-	}
-
-	var output strings.Builder
-	if len(matches) == 0 {
-		output.WriteString("No files found")
-	} else {
-		fmt.Fprintf(&output, "Found %d matches\n", len(matches))
-
-		currentFile := ""
-		for _, match := range matches {
-			if currentFile != match.path {
-				if currentFile != "" {
-					output.WriteString("\n")
-				}
-				currentFile = match.path
-				fmt.Fprintf(&output, "%s:\n", match.path)
-			}
-			if match.lineNum > 0 {
-				fmt.Fprintf(&output, "  Line %d: %s\n", match.lineNum, match.lineText)
-			} else {
-				fmt.Fprintf(&output, "  %s\n", match.path)
-			}
-		}
-
-		if truncated {
-			output.WriteString("\n(Results are truncated. Consider using a more specific path or pattern.)")
-		}
-	}
-
-	return WithResponseMetadata(
-		NewTextResponse(output.String()),
-		GrepResponseMetadata{
-			NumberOfMatches: len(matches),
-			Truncated:       truncated,
-		},
-	), nil
 }
 
 func searchFiles(ctx context.Context, pattern, rootPath, include string, limit int) ([]grepMatch, bool, error) {
