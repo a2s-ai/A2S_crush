@@ -38,7 +38,7 @@ daniel@MacBook A2S_crush %
 
 * Ubuntu 24 LTS VM with 4 x NVIDIA RTX 6000A
 
-## Ollama (Docker) Settings with 20k Context
+## Ollama (Docker) Settings with 64K Context
 
 ```
 root@ai-ubuntu24gpu-large:~# cat /opt/run-ollama-max.sh
