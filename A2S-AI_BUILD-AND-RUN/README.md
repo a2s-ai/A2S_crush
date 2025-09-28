@@ -29,6 +29,9 @@ daniel@MacBook A2S_crush %
 ```
 
 ```
+cp docker_build_and_run.sh ../docker_build_and_run.sh
+cd ../
+
 ./docker_build_and_run.sh
 ```
 
