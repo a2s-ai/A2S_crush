@@ -19,7 +19,7 @@ daniel@MacBook A2S_crush % cat crush.json
           "name": "qwen3:235b-a22b-thinking-2507-q4_K_M",
           "id": "qwen3:235b-a22b-thinking-2507-q4_K_M",
           "context_window": 65536,
-          "default_max_tokens": 4096
+          "default_max_tokens": 8192
         }
       ]
     }
