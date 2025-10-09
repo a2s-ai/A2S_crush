@@ -16,8 +16,8 @@ daniel@MacBook A2S_crush % cat crush.json
       "type": "openai",
       "models": [
         {
-          "name": "qwen3:235b-a22b-thinking-2507-q4_K_M",
-          "id": "qwen3:235b-a22b-thinking-2507-q4_K_M",
+          "name": "qwen3:235b-a22b-thinking-2507-q4_K_M-64k",
+          "id": "qwen3:235b-a22b-thinking-2507-q4_K_M-64k",
           "context_window": 65536,
           "default_max_tokens": 4096
         }
@@ -75,8 +75,9 @@ docker run \
        -e OLLAMA_LOAD_TIMEOUT=600 \
        -e OLLAMA_CONTEXT_LENGTH=65536 \
        -e OLLAMA_FLASH_ATTENTION=1 \
-       -e OLLAMA_NOPRUNE=1 \
        ollama/ollama:latest
+
+#       -e OLLAMA_NOPRUNE=1 \
 
 # EOF
 root@ai-ubuntu24gpu-large:~#
