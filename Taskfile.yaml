@@ -38,7 +38,7 @@ tasks:
   run:
     desc: Run build
     cmds:
-      - go run .
+      - go run . {{.CLI_ARGS}}
 
   test:
     desc: Run tests
@@ -99,11 +99,11 @@ tasks:
     cmds:
       - task: fetch-tags
       - git commit --allow-empty -m "{{.NEXT}}"
-      - git tag --annotate --sign {{.NEXT}} {{.CLI_ARGS}}
+      - git tag --annotate -m "{{.NEXT}}" {{.NEXT}} {{.CLI_ARGS}}
       - echo "Pushing {{.NEXT}}..."
-      - git push origin --tags
+      - git push origin main --follow-tags
 
   fetch-tags:
-      cmds:
+    cmds:
       - git tag -d nightly || true
       - git fetch --tags
