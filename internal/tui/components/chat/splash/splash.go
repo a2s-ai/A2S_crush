@@ -9,9 +9,9 @@ import (
 	"github.com/charmbracelet/bubbles/v2/spinner"
 	tea "github.com/charmbracelet/bubbletea/v2"
 	"github.com/charmbracelet/catwalk/pkg/catwalk"
+	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/home"
-	"github.com/charmbracelet/crush/internal/llm/prompt"
 	"github.com/charmbracelet/crush/internal/tui/components/chat"
 	"github.com/charmbracelet/crush/internal/tui/components/core"
 	"github.com/charmbracelet/crush/internal/tui/components/core/layout"
@@ -135,7 +135,7 @@ func (s *splashCmp) SetSize(width int, height int) tea.Cmd {
 }
 
 // Update implements SplashPage.
-func (s *splashCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (s *splashCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return s, s.SetSize(msg.Width, msg.Height)
@@ -334,7 +334,7 @@ func (s *splashCmp) initializeProject() tea.Cmd {
 		cmds = append(cmds,
 			util.CmdHandler(chat.SessionClearedMsg{}),
 			util.CmdHandler(chat.SendMsg{
-				Text: prompt.Initialize(),
+				Text: agent.InitializePrompt(),
 			}),
 		)
 	}
@@ -695,7 +695,7 @@ func (s *splashCmp) mcpBlock() string {
 
 func (s *splashCmp) currentModelBlock() string {
 	cfg := config.Get()
-	agentCfg := cfg.Agents["coder"]
+	agentCfg := cfg.Agents[config.AgentCoder]
 	model := config.Get().GetModelByType(agentCfg.Model)
 	if model == nil {
 		return ""

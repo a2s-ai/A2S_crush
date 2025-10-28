@@ -44,7 +44,7 @@ func (h *header) Init() tea.Cmd {
 	return nil
 }
 
-func (h *header) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (h *header) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent {
@@ -119,7 +119,7 @@ func (h *header) details(availWidth int) string {
 		parts = append(parts, s.Error.Render(fmt.Sprintf("%s%d", styles.ErrorIcon, errorCount)))
 	}
 
-	agentCfg := config.Get().Agents["coder"]
+	agentCfg := config.Get().Agents[config.AgentCoder]
 	model := config.Get().GetModelByType(agentCfg.Model)
 	percentage := (float64(h.session.CompletionTokens+h.session.PromptTokens) / float64(model.ContextWindow)) * 100
 	formattedPercentage := s.Muted.Render(fmt.Sprintf("%d%%", int(percentage)))
