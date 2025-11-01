@@ -11,6 +11,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/permission"
 )
@@ -57,9 +58,7 @@ func NewLsTool(permissions permission.Service, workingDir string, lsConfig confi
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error expanding path: %v", err)), nil
 			}
 
-			if !filepath.IsAbs(searchPath) {
-				searchPath = filepath.Join(workingDir, searchPath)
-			}
+			searchPath = filepathext.SmartJoin(workingDir, searchPath)
 
 			// Check if directory is outside working directory and request permission if needed
 			absWorkingDir, err := filepath.Abs(workingDir)
@@ -210,9 +209,9 @@ func printTree(tree []*TreeNode, rootPath string) string {
 	var result strings.Builder
 
 	result.WriteString("- ")
-	result.WriteString(rootPath)
+	result.WriteString(filepath.ToSlash(rootPath))
 	if rootPath[len(rootPath)-1] != '/' {
-		result.WriteByte(filepath.Separator)
+		result.WriteByte('/')
 	}
 	result.WriteByte('\n')
 
@@ -228,7 +227,7 @@ func printNode(builder *strings.Builder, node *TreeNode, level int) {
 
 	nodeName := node.Name
 	if node.Type == "directory" {
-		nodeName = nodeName + string(filepath.Separator)
+		nodeName = nodeName + "/"
 	}
 
 	fmt.Fprintf(builder, "%s- %s\n", indent, nodeName)

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	_ "embed"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/permission"
 )
 
@@ -59,13 +61,9 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 				return fantasy.NewTextErrorResponse("URL must start with http:// or https://"), nil
 			}
 
-			// Convert relative path to absolute path
-			var filePath string
-			if filepath.IsAbs(params.FilePath) {
-				filePath = params.FilePath
-			} else {
-				filePath = filepath.Join(workingDir, params.FilePath)
-			}
+			filePath := filepathext.SmartJoin(workingDir, params.FilePath)
+			relPath, _ := filepath.Rel(workingDir, filePath)
+			relPath = filepath.ToSlash(cmp.Or(relPath, filePath))
 
 			sessionID := GetSessionFromContext(ctx)
 			if sessionID == "" {
@@ -149,7 +147,7 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 			}
 
 			contentType := resp.Header.Get("Content-Type")
-			responseMsg := fmt.Sprintf("Successfully downloaded %d bytes to %s", bytesWritten, filePath)
+			responseMsg := fmt.Sprintf("Successfully downloaded %d bytes to %s", bytesWritten, relPath)
 			if contentType != "" {
 				responseMsg += fmt.Sprintf(" (Content-Type: %s)", contentType)
 			}
