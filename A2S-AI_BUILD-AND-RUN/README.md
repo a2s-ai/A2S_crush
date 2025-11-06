@@ -52,7 +52,7 @@ root@ai-ubuntu24gpu-large:/opt# cat run-vllm-max_QuantTrio_MiniMax-M2-AWQ.sh
 export HUGGING_FACE_HUB_TOKEN=hf_XXX-XXX-XXX
 export CUDA_VISIBLE_DEVICES="0,1,2,3"
 
-docker network create vllm-max
+docker network create vllm-minimax
 
 docker run \
        --name vllm-minimax \
