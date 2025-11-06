@@ -1,3 +1,4 @@
+
 # A2S-AI (Build and Run)
 
 ```
@@ -11,14 +12,14 @@ daniel@MacBook A2S_crush % cat crush.json
 {
   "providers": {
     "ollama": {
-      "name": "Ollama",
+      "name": "vLLM",
       "base_url": "https://XXX-XXX-XXX-XXX/v1/",
       "type": "openai",
       "models": [
         {
-          "name": "qwen3:235b-a22b-thinking-2507-q4_K_M",
-          "id": "qwen3:235b-a22b-thinking-2507-q4_K_M",
-          "context_window": 65536,
+          "name": "MiniMax-M2-AWQ",
+          "id": "MiniMax-M2-AWQ",
+          "context_window": 196608,
           "default_max_tokens": 8192
         }
       ]
@@ -38,7 +39,45 @@ cd ..
 
 ![a2s-ai](crush.png)
 
-# A2S GPU Server
+# A2S GPU Server - New Setup (> 01.11.2025) - vLLM with MiniMax-M2-AWQ
+
+* Ubuntu 24 LTS VM with 4 x NVIDIA RTX 6000A
+
+## vLLM (Docker) Settings with 196K (full) Context
+
+```
+root@ai-ubuntu24gpu-large:/opt# cat run-vllm-max_QuantTrio_MiniMax-M2-AWQ.sh
+#!/bin/sh
+
+export HUGGING_FACE_HUB_TOKEN=hf_XXX-XXX-XXX
+export CUDA_VISIBLE_DEVICES="0,1,2,3"
+
+docker network create vllm-max
+
+docker run \
+       --name vllm-minimax \
+       --network vllm-minimax \
+       --gpus all \
+       --runtime=nvidia \
+       --ipc=host \
+       --restart unless-stopped -d --init \
+       -p 8000:8000 \
+       -v /data/opt/vllm:/root/.cache/huggingface \
+       vllm/vllm-openai:nightly \
+         --model a2s-ai/MiniMax-M2-AWQ \
+         --served-model-name MiniMax-M2-AWQ \
+         --tensor-parallel-size 4 \
+         --enable-auto-tool-choice \
+         --tool-call-parser minimax_m2 \
+         --reasoning-parser minimax_m2_append_think \
+         --max-model-len 196608 \
+         --trust-remote-code
+
+# EOF
+root@ai-ubuntu24gpu-large:/opt#
+```
+
+# A2S GPU Server - Old Setup (< 01.11.2025) - Ollama with qwen3:235b-a22b-thinking-2507-q4_K_M
 
 * Ubuntu 24 LTS VM with 4 x NVIDIA RTX 6000A
 
