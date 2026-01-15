@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/filepathext"
+	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/crush/internal/permission"
 )
@@ -33,12 +35,6 @@ type ViewPermissionsParams struct {
 	Limit    int    `json:"limit"`
 }
 
-type viewTool struct {
-	lspClients  *csync.Map[string, *lsp.Client]
-	workingDir  string
-	permissions permission.Service
-}
-
 type ViewResponseMetadata struct {
 	FilePath string `json:"file_path"`
 	Content  string `json:"content"`
@@ -46,12 +42,12 @@ type ViewResponseMetadata struct {
 
 const (
 	ViewToolName     = "view"
-	MaxReadSize      = 250 * 1024
+	MaxReadSize      = 5 * 1024 * 1024 // 5MB
 	DefaultReadLimit = 2000
 	MaxLineLength    = 2000
 )
 
-func NewViewTool(lspClients *csync.Map[string, *lsp.Client], permissions permission.Service, workingDir string) fantasy.AgentTool {
+func NewViewTool(lspClients *csync.Map[string, *lsp.Client], permissions permission.Service, workingDir string, skillsPaths ...string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		ViewToolName,
 		string(viewDescription),
@@ -75,14 +71,17 @@ func NewViewTool(lspClients *csync.Map[string, *lsp.Client], permissions permiss
 			}
 
 			relPath, err := filepath.Rel(absWorkingDir, absFilePath)
-			if err != nil || strings.HasPrefix(relPath, "..") {
-				// File is outside working directory, request permission
+			isOutsideWorkDir := err != nil || strings.HasPrefix(relPath, "..")
+			isSkillFile := isInSkillsPath(absFilePath, skillsPaths)
+
+			// Request permission for files outside working directory, unless it's a skill file.
+			if isOutsideWorkDir && !isSkillFile {
 				sessionID := GetSessionFromContext(ctx)
 				if sessionID == "" {
 					return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for accessing files outside working directory")
 				}
 
-				granted := permissions.Request(
+				granted, err := permissions.Request(ctx,
 					permission.CreatePermissionRequest{
 						SessionID:   sessionID,
 						Path:        absFilePath,
@@ -93,7 +92,9 @@ func NewViewTool(lspClients *csync.Map[string, *lsp.Client], permissions permiss
 						Params:      ViewPermissionsParams(params),
 					},
 				)
-
+				if err != nil {
+					return fantasy.ToolResponse{}, err
+				}
 				if !granted {
 					return fantasy.ToolResponse{}, permission.ErrorPermissionDenied
 				}
@@ -136,22 +137,35 @@ func NewViewTool(lspClients *csync.Map[string, *lsp.Client], permissions permiss
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("Path is a directory, not a file: %s", filePath)), nil
 			}
 
-			// Check file size
-			if fileInfo.Size() > MaxReadSize {
+			// Based on the specifications we should not limit the skills read.
+			if !isSkillFile && fileInfo.Size() > MaxReadSize {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("File is too large (%d bytes). Maximum size is %d bytes",
 					fileInfo.Size(), MaxReadSize)), nil
 			}
 
-			// Set default limit if not provided
+			// Set default limit if not provided (no limit for SKILL.md files)
 			if params.Limit <= 0 {
-				params.Limit = DefaultReadLimit
+				if isSkillFile {
+					params.Limit = 1000000 // Effectively no limit for skill files
+				} else {
+					params.Limit = DefaultReadLimit
+				}
 			}
 
-			// Check if it's an image file
-			isImage, imageType := isImageFile(filePath)
-			// TODO: handle images
-			if isImage {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("This is an image file of type: %s\n", imageType)), nil
+			isSupportedImage, mimeType := getImageMimeType(filePath)
+			if isSupportedImage {
+				if !GetSupportsImagesFromContext(ctx) {
+					modelName := GetModelNameFromContext(ctx)
+					return fantasy.NewTextErrorResponse(fmt.Sprintf("This model (%s) does not support image data.", modelName)), nil
+				}
+
+				imageData, err := os.ReadFile(filePath)
+				if err != nil {
+					return fantasy.ToolResponse{}, fmt.Errorf("error reading image file: %w", err)
+				}
+
+				encoded := base64.StdEncoding.EncodeToString(imageData)
+				return fantasy.NewImageResponse([]byte(encoded), mimeType), nil
 			}
 
 			// Read the file content
@@ -176,7 +190,7 @@ func NewViewTool(lspClients *csync.Map[string, *lsp.Client], permissions permiss
 			}
 			output += "\n</file>\n"
 			output += getDiagnostics(filePath, lspClients)
-			recordFileRead(filePath)
+			filetracker.RecordRead(filePath)
 			return fantasy.WithResponseMetadata(
 				fantasy.NewTextResponse(output),
 				ViewResponseMetadata{
@@ -263,21 +277,17 @@ func readTextFile(filePath string, offset, limit int) (string, int, error) {
 	return strings.Join(lines, "\n"), lineCount, nil
 }
 
-func isImageFile(filePath string) (bool, string) {
+func getImageMimeType(filePath string) (bool, string) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
 	case ".jpg", ".jpeg":
-		return true, "JPEG"
+		return true, "image/jpeg"
 	case ".png":
-		return true, "PNG"
+		return true, "image/png"
 	case ".gif":
-		return true, "GIF"
-	case ".bmp":
-		return true, "BMP"
-	case ".svg":
-		return true, "SVG"
+		return true, "image/gif"
 	case ".webp":
-		return true, "WebP"
+		return true, "image/webp"
 	default:
 		return false, ""
 	}
@@ -308,4 +318,45 @@ func (s *LineScanner) Text() string {
 
 func (s *LineScanner) Err() error {
 	return s.scanner.Err()
+}
+
+// isInSkillsPath checks if filePath is within any of the configured skills
+// directories. Returns true for files that can be read without permission
+// prompts and without size limits.
+//
+// Note that symlinks are resolved to prevent path traversal attacks via
+// symbolic links.
+func isInSkillsPath(filePath string, skillsPaths []string) bool {
+	if len(skillsPaths) == 0 {
+		return false
+	}
+
+	absFilePath, err := filepath.Abs(filePath)
+	if err != nil {
+		return false
+	}
+
+	evalFilePath, err := filepath.EvalSymlinks(absFilePath)
+	if err != nil {
+		return false
+	}
+
+	for _, skillsPath := range skillsPaths {
+		absSkillsPath, err := filepath.Abs(skillsPath)
+		if err != nil {
+			continue
+		}
+
+		evalSkillsPath, err := filepath.EvalSymlinks(absSkillsPath)
+		if err != nil {
+			continue
+		}
+
+		relPath, err := filepath.Rel(evalSkillsPath, evalFilePath)
+		if err == nil && !strings.HasPrefix(relPath, "..") {
+			return true
+		}
+	}
+
+	return false
 }

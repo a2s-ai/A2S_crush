@@ -8,11 +8,16 @@ type KeyMap struct {
 	Select,
 	Next,
 	Previous,
+	Choose,
 	Tab,
 	Close key.Binding
 
 	isAPIKeyHelp  bool
 	isAPIKeyValid bool
+
+	isHyperDeviceFlow    bool
+	isCopilotDeviceFlow  bool
+	isCopilotUnavailable bool
 }
 
 func DefaultKeyMap() KeyMap {
@@ -28,6 +33,10 @@ func DefaultKeyMap() KeyMap {
 		Previous: key.NewBinding(
 			key.WithKeys("up", "ctrl+p"),
 			key.WithHelp("↑", "previous item"),
+		),
+		Choose: key.NewBinding(
+			key.WithKeys("left", "right", "h", "l"),
+			key.WithHelp("←→", "choose"),
 		),
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),
@@ -64,8 +73,34 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 
 // ShortHelp implements help.KeyMap.
 func (k KeyMap) ShortHelp() []key.Binding {
+	if k.isHyperDeviceFlow || k.isCopilotDeviceFlow {
+		return []key.Binding{
+			key.NewBinding(
+				key.WithKeys("c"),
+				key.WithHelp("c", "copy code"),
+			),
+			key.NewBinding(
+				key.WithKeys("enter"),
+				key.WithHelp("enter", "copy & open"),
+			),
+			k.Close,
+		}
+	}
+	if k.isCopilotUnavailable {
+		return []key.Binding{
+			key.NewBinding(
+				key.WithKeys("enter"),
+				key.WithHelp("enter", "open signup"),
+			),
+			k.Close,
+		}
+	}
 	if k.isAPIKeyHelp && !k.isAPIKeyValid {
 		return []key.Binding{
+			key.NewBinding(
+				key.WithKeys("enter"),
+				key.WithHelp("enter", "submit"),
+			),
 			k.Close,
 		}
 	} else if k.isAPIKeyValid {

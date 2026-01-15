@@ -1,7 +1,7 @@
 # Crush
 
 <p align="center">
-    <a href="https://stuff.charm.sh/crush/charm-crush.png"><img width="450" alt="Charm Crush Logo" src="https://github.com/user-attachments/assets/adc1a6f4-b284-4603-836c-59038caa2e8b" /></a><br />
+    <a href="https://stuff.charm.sh/crush/charm-crush.png"><img width="450" alt="Charm Crush Logo" src="https://github.com/user-attachments/assets/cf8ca3ce-8b02-43f0-9d0f-5a331488da4b" /></a><br />
     <a href="https://github.com/charmbracelet/crush/releases"><img src="https://img.shields.io/github/release/charmbracelet/crush" alt="Latest Release"></a>
     <a href="https://github.com/charmbracelet/crush/actions"><img src="https://github.com/charmbracelet/crush/actions/workflows/build.yml/badge.svg" alt="Build Status"></a>
 </p>
@@ -18,7 +18,8 @@
 - **Session-Based:** maintain multiple work sessions and contexts per project
 - **LSP-Enhanced:** Crush uses LSPs for additional context, just like you do
 - **Extensible:** add capabilities via MCPs (`http`, `stdio`, and `sse`)
-- **Works Everywhere:** first-class support in every terminal on macOS, Linux, Windows (PowerShell and WSL), FreeBSD, OpenBSD, and NetBSD
+- **Works Everywhere:** first-class support in every terminal on macOS, Linux, Windows (PowerShell and WSL), Android, FreeBSD, OpenBSD, and NetBSD
+- **Industrial Grade:** built on the Charm ecosystem, powering 25k+ applications, from leading open source projects, to business-critical infrastructure
 
 ## Installation
 
@@ -36,6 +37,9 @@ yay -S crush-bin
 
 # Nix
 nix run github:numtide/nix-ai-tools#crush
+
+# FreeBSD
+pkg install crush
 ```
 
 Windows users:
@@ -52,9 +56,9 @@ scoop install crush
 <details>
 <summary><strong>Nix (NUR)</strong></summary>
 
-Crush is available via [NUR](https://github.com/nix-community/NUR) in `nur.repos.charmbracelet.crush`.
+Crush is available via the official Charm [NUR](https://github.com/nix-community/NUR) in `nur.repos.charmbracelet.crush`, which is the most up-to-date way to get Crush in Nix.
 
-You can also try out Crush via `nix-shell`:
+You can also try out Crush via the NUR with `nix-shell`:
 
 ```bash
 # Add the NUR channel.
@@ -186,11 +190,11 @@ That said, you can also set environment variables for preferred providers.
 | `VERTEXAI_PROJECT`          | Google Cloud VertexAI (Gemini)                     |
 | `VERTEXAI_LOCATION`         | Google Cloud VertexAI (Gemini)                     |
 | `GROQ_API_KEY`              | Groq                                               |
-| `AWS_ACCESS_KEY_ID`         | AWS Bedrock (Claude)                               |
-| `AWS_SECRET_ACCESS_KEY`     | AWS Bedrock (Claude)                               |
-| `AWS_REGION`                | AWS Bedrock (Claude)                               |
-| `AWS_PROFILE`               | AWS Bedrock (Custom Profile)                       |
-| `AWS_BEARER_TOKEN_BEDROCK`  | AWS Bedrock                                        |
+| `AWS_ACCESS_KEY_ID`         | Amazon Bedrock (Claude)                               |
+| `AWS_SECRET_ACCESS_KEY`     | Amazon Bedrock (Claude)                               |
+| `AWS_REGION`                | Amazon Bedrock (Claude)                               |
+| `AWS_PROFILE`               | Amazon Bedrock (Custom Profile)                       |
+| `AWS_BEARER_TOKEN_BEDROCK`  | Amazon Bedrock                                        |
 | `AZURE_OPENAI_API_ENDPOINT` | Azure OpenAI models                                |
 | `AZURE_OPENAI_API_KEY`      | Azure OpenAI models (optional when using Entra ID) |
 | `AZURE_OPENAI_API_VERSION`  | Azure OpenAI models                                |
@@ -231,6 +235,11 @@ $HOME/.local/share/crush/crush.json
 # Windows
 %LOCALAPPDATA%\crush\crush.json
 ```
+
+> [!TIP]
+> You can override the user and data config locations by setting:
+> * `CRUSH_GLOBAL_CONFIG`
+> * `CRUSH_GLOBAL_DATA`
 
 ### LSPs
 
@@ -275,6 +284,7 @@ using `$(echo $VAR)` syntax.
       "args": ["/path/to/mcp-server.js"],
       "timeout": 120,
       "disabled": false,
+      "disabled_tools": ["some-tool-name"],
       "env": {
         "NODE_ENV": "production"
       }
@@ -284,6 +294,7 @@ using `$(echo $VAR)` syntax.
       "url": "https://api.githubcopilot.com/mcp/",
       "timeout": 120,
       "disabled": false,
+      "disabled_tools": ["create_issue", "create_pull_request"],
       "headers": {
         "Authorization": "Bearer $GH_PAT"
       }
@@ -335,6 +346,91 @@ permissions. Use this with care.
 You can also skip all permission prompts entirely by running Crush with the
 `--yolo` flag. Be very, very careful with this feature.
 
+### Disabling Built-In Tools
+
+If you'd like to prevent Crush from using certain built-in tools entirely, you
+can disable them via the `options.disabled_tools` list. Disabled tools are
+completely hidden from the agent.
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "options": {
+    "disabled_tools": [
+      "bash",
+      "sourcegraph"
+    ]
+  }
+}
+```
+
+To disable tools from MCP servers, see the [MCP config section](#mcps).
+
+### Agent Skills
+
+Crush supports the [Agent Skills](https://agentskills.io) open standard for
+extending agent capabilities with reusable skill packages. Skills are folders
+containing a `SKILL.md` file with instructions that Crush can discover and
+activate on demand.
+
+Skills are discovered from:
+
+- `~/.config/crush/skills/` on Unix (default, can be overridden with `CRUSH_SKILLS_DIR`)
+- `%LOCALAPPDATA%\crush\skills\` on Windows (default, can be overridden with `CRUSH_SKILLS_DIR`)
+- Additional paths configured via `options.skills_paths`
+
+```jsonc
+{
+  "$schema": "https://charm.land/crush.json",
+  "options": {
+    "skills_paths": [
+      "~/.config/crush/skills", // Windows: "%LOCALAPPDATA%\\crush\\skills",
+      "./project-skills"
+    ]
+  }
+}
+```
+
+You can get started with example skills from [anthropics/skills](https://github.com/anthropics/skills):
+
+```bash
+# Unix
+mkdir -p ~/.config/crush/skills
+cd ~/.config/crush/skills
+git clone https://github.com/anthropics/skills.git _temp
+mv _temp/skills/* . && rm -rf _temp
+```
+
+```powershell
+# Windows (PowerShell)
+mkdir -Force "$env:LOCALAPPDATA\crush\skills"
+cd "$env:LOCALAPPDATA\crush\skills"
+git clone https://github.com/anthropics/skills.git _temp
+mv _temp/skills/* . ; rm -r -force _temp
+```
+
+### Initialization
+
+When you initialize a project, Crush analyzes your codebase and creates
+a context file that helps it work more effectively in future sessions.
+By default, this file is named `AGENTS.md`, but you can customize the
+name and location with the `initialize_as` option:
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "options": {
+    "initialize_as": "AGENTS.md"
+  }
+}
+```
+
+This is useful if you prefer a different naming convention or want to
+place the file in a specific directory (e.g., `CRUSH.md` or
+`docs/LLMs.md`). Crush will fill the file with project-specific context
+like build commands, code patterns, and conventions it discovered during
+initialization.
+
 ### Attribution Settings
 
 By default, Crush adds attribution information to Git commits and pull requests
@@ -345,63 +441,21 @@ it creates. You can customize this behavior with the `attribution` option:
   "$schema": "https://charm.land/crush.json",
   "options": {
     "attribution": {
-      "co_authored_by": true,
+      "trailer_style": "co-authored-by",
       "generated_with": true
     }
   }
 }
 ```
 
-- `co_authored_by`: When true (default), adds `Co-Authored-By: Crush <crush@charm.land>` to commit messages
-- `generated_with`: When true (default), adds `💘 Generated with Crush` line to commit messages and PR descriptions
-
-### Local Models
-
-Local models can also be configured via OpenAI-compatible API. Here are two common examples:
-
-#### Ollama
-
-```json
-{
-  "providers": {
-    "ollama": {
-      "name": "Ollama",
-      "base_url": "http://localhost:11434/v1/",
-      "type": "openai-compat",
-      "models": [
-        {
-          "name": "Qwen 3 30B",
-          "id": "qwen3:30b",
-          "context_window": 256000,
-          "default_max_tokens": 20000
-        }
-      ]
-    }
-  }
-}
-```
-
-#### LM Studio
-
-```json
-{
-  "providers": {
-    "lmstudio": {
-      "name": "LM Studio",
-      "base_url": "http://localhost:1234/v1/",
-      "type": "openai-compat",
-      "models": [
-        {
-          "name": "Qwen 3 30B",
-          "id": "qwen/qwen3-30b-a3b-2507",
-          "context_window": 256000,
-          "default_max_tokens": 20000
-        }
-      ]
-    }
-  }
-}
-```
+- `trailer_style`: Controls the attribution trailer added to commit messages
+  (default: `assisted-by`)
+	- `assisted-by`: Adds `Assisted-by: [Model Name] via Crush <crush@charm.land>`
+	  (includes the model name)
+	- `co-authored-by`: Adds `Co-Authored-By: Crush <crush@charm.land>`
+	- `none`: No attribution trailer
+- `generated_with`: When true (default), adds `💘 Generated with Crush` line to
+  commit messages and PR descriptions
 
 ### Custom Providers
 
@@ -514,6 +568,54 @@ To add specific models to the configuration, configure as such:
           "default_max_tokens": 50000,
           "can_reason": true,
           "supports_attachments": true
+        }
+      ]
+    }
+  }
+}
+```
+
+### Local Models
+
+Local models can also be configured via OpenAI-compatible API. Here are two common examples:
+
+#### Ollama
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "name": "Ollama",
+      "base_url": "http://localhost:11434/v1/",
+      "type": "openai-compat",
+      "models": [
+        {
+          "name": "Qwen 3 30B",
+          "id": "qwen3:30b",
+          "context_window": 256000,
+          "default_max_tokens": 20000
+        }
+      ]
+    }
+  }
+}
+```
+
+#### LM Studio
+
+```json
+{
+  "providers": {
+    "lmstudio": {
+      "name": "LM Studio",
+      "base_url": "http://localhost:1234/v1/",
+      "type": "openai-compat",
+      "models": [
+        {
+          "name": "Qwen 3 30B",
+          "id": "qwen/qwen3-30b-a3b-2507",
+          "context_window": 256000,
+          "default_max_tokens": 20000
         }
       ]
     }
@@ -635,17 +737,6 @@ Or by setting the following in your config:
 
 Crush also respects the [`DO_NOT_TRACK`](https://consoledonottrack.com)
 convention which can be enabled via `export DO_NOT_TRACK=1`.
-
-## A Note on Claude Max and GitHub Copilot
-
-Crush only supports model providers through official, compliant APIs. We do not
-support or endorse any methods that rely on personal Claude Max and GitHub
-Copilot accounts or OAuth workarounds, which violate Anthropic and
-Microsoft’s Terms of Service.
-
-We’re committed to building sustainable, trusted integrations with model
-providers. If you’re a provider interested in working with us,
-[reach out](mailto:vt100@charm.sh).
 
 ## Contributing
 

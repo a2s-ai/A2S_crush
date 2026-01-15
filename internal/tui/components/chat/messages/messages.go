@@ -181,17 +181,18 @@ func (msg *messageCmp) style() lipgloss.Style {
 func (m *messageCmp) renderAssistantMessage() string {
 	t := styles.CurrentTheme()
 	parts := []string{}
-	content := m.message.Content().String()
+	content := strings.TrimSpace(m.message.Content().String())
 	thinking := m.message.IsThinking()
+	thinkingContent := strings.TrimSpace(m.message.ReasoningContent().Thinking)
 	finished := m.message.IsFinished()
 	finishedData := m.message.FinishPart()
-	thinkingContent := ""
 
-	if thinking || strings.TrimSpace(m.message.ReasoningContent().Thinking) != "" {
+	if thinking || thinkingContent != "" {
 		m.anim.SetLabel("Thinking")
 		thinkingContent = m.renderThinkingContent()
 	} else if finished && content == "" && finishedData.Reason == message.FinishReasonEndTurn {
-		content = ""
+		// Don't render empty assistant messages with EndTurn
+		return ""
 	} else if finished && content == "" && finishedData.Reason == message.FinishReasonCanceled {
 		content = "*Canceled*"
 	} else if finished && content == "" && finishedData.Reason == message.FinishReasonError {
@@ -222,27 +223,42 @@ func (m *messageCmp) renderAssistantMessage() string {
 // message content and any attached files with appropriate icons.
 func (m *messageCmp) renderUserMessage() string {
 	t := styles.CurrentTheme()
-	parts := []string{
-		m.toMarkdown(m.message.Content().String()),
+	var parts []string
+
+	if s := m.message.Content().String(); s != "" {
+		parts = append(parts, m.toMarkdown(s))
 	}
 
-	attachmentStyles := t.S().Text.
-		MarginLeft(1).
-		Background(t.BgSubtle)
+	attachmentStyle := t.S().Base.
+		Padding(0, 1).
+		MarginRight(1).
+		Background(t.FgMuted).
+		Foreground(t.FgBase).
+		Render
+	iconStyle := t.S().Base.
+		Foreground(t.BgSubtle).
+		Background(t.Green).
+		Padding(0, 1).
+		Bold(true).
+		Render
 
 	attachments := make([]string, len(m.message.BinaryContent()))
 	for i, attachment := range m.message.BinaryContent() {
 		const maxFilenameWidth = 10
-		filename := filepath.Base(attachment.Path)
-		attachments[i] = attachmentStyles.Render(fmt.Sprintf(
-			" %s %s ",
-			styles.DocumentIcon,
-			ansi.Truncate(filename, maxFilenameWidth, "..."),
-		))
+		filename := ansi.Truncate(filepath.Base(attachment.Path), 10, "...")
+		icon := styles.ImageIcon
+		if strings.HasPrefix(attachment.MIMEType, "text/") {
+			icon = styles.TextIcon
+		}
+		attachments[i] = lipgloss.JoinHorizontal(
+			lipgloss.Left,
+			iconStyle(icon),
+			attachmentStyle(filename),
+		)
 	}
 
 	if len(attachments) > 0 {
-		parts = append(parts, "", strings.Join(attachments, ""))
+		parts = append(parts, strings.Join(attachments, ""))
 	}
 
 	joined := lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -310,7 +326,11 @@ func (m *messageCmp) renderThinkingContent() string {
 		}
 	}
 	lineStyle := t.S().Subtle.Background(t.BgBaseLighter)
-	return lineStyle.Width(m.textWidth()).Padding(0, 1).Render(m.thinkingViewport.View()) + "\n\n" + footer
+	result := lineStyle.Width(m.textWidth()).Padding(0, 1, 0, 0).Render(m.thinkingViewport.View())
+	if footer != "" {
+		result += "\n\n" + footer
+	}
+	return result
 }
 
 // shouldSpin determines whether the message should show a loading animation.

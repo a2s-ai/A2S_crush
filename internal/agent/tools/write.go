@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/diff"
 	"github.com/charmbracelet/crush/internal/filepathext"
+	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/history"
 
@@ -33,13 +34,6 @@ type WritePermissionsParams struct {
 	FilePath   string `json:"file_path"`
 	OldContent string `json:"old_content,omitempty"`
 	NewContent string `json:"new_content,omitempty"`
-}
-
-type writeTool struct {
-	lspClients  *csync.Map[string, *lsp.Client]
-	permissions permission.Service
-	files       history.Service
-	workingDir  string
 }
 
 type WriteResponseMetadata struct {
@@ -72,7 +66,7 @@ func NewWriteTool(lspClients *csync.Map[string, *lsp.Client], permissions permis
 				}
 
 				modTime := fileInfo.ModTime()
-				lastRead := getLastReadTime(filePath)
+				lastRead := filetracker.LastReadTime(filePath)
 				if modTime.After(lastRead) {
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("File %s has been modified since it was last read.\nLast modification: %s\nLast read: %s\n\nPlease read the file again before modifying it.",
 						filePath, modTime.Format(time.RFC3339), lastRead.Format(time.RFC3339))), nil
@@ -110,7 +104,7 @@ func NewWriteTool(lspClients *csync.Map[string, *lsp.Client], permissions permis
 				strings.TrimPrefix(filePath, workingDir),
 			)
 
-			p := permissions.Request(
+			p, err := permissions.Request(ctx,
 				permission.CreatePermissionRequest{
 					SessionID:   sessionID,
 					Path:        fsext.PathOrPrefix(filePath, workingDir),
@@ -125,6 +119,9 @@ func NewWriteTool(lspClients *csync.Map[string, *lsp.Client], permissions permis
 					},
 				},
 			)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
 			if !p {
 				return fantasy.ToolResponse{}, permission.ErrorPermissionDenied
 			}
@@ -144,20 +141,20 @@ func NewWriteTool(lspClients *csync.Map[string, *lsp.Client], permissions permis
 				}
 			}
 			if file.Content != oldContent {
-				// User Manually changed the content store an intermediate version
+				// User manually changed the content; store an intermediate version
 				_, err = files.CreateVersion(ctx, sessionID, filePath, oldContent)
 				if err != nil {
-					slog.Debug("Error creating file history version", "error", err)
+					slog.Error("Error creating file history version", "error", err)
 				}
 			}
 			// Store the new version
 			_, err = files.CreateVersion(ctx, sessionID, filePath, params.Content)
 			if err != nil {
-				slog.Debug("Error creating file history version", "error", err)
+				slog.Error("Error creating file history version", "error", err)
 			}
 
-			recordFileWrite(filePath)
-			recordFileRead(filePath)
+			filetracker.RecordWrite(filePath)
+			filetracker.RecordRead(filePath)
 
 			notifyLSPs(ctx, lspClients, params.FilePath)
 

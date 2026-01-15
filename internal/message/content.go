@@ -3,6 +3,7 @@ package message
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -45,6 +46,7 @@ type ReasoningContent struct {
 	Thinking         string                             `json:"thinking"`
 	Signature        string                             `json:"signature"`
 	ThoughtSignature string                             `json:"thought_signature"` // Used for google
+	ToolID           string                             `json:"tool_id"`           // Used for openrouter google models
 	ResponsesData    *openai.ResponsesReasoningMetadata `json:"responses_data"`
 	StartedAt        int64                              `json:"started_at,omitempty"`
 	FinishedAt       int64                              `json:"finished_at,omitempty"`
@@ -261,12 +263,13 @@ func (m *Message) AppendReasoningContent(delta string) {
 	}
 }
 
-func (m *Message) AppendThoughtSignature(signature string) {
+func (m *Message) AppendThoughtSignature(signature string, toolCallID string) {
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
 			m.Parts[i] = ReasoningContent{
 				Thinking:         c.Thinking,
 				ThoughtSignature: c.ThoughtSignature + signature,
+				ToolID:           toolCallID,
 				Signature:        c.Signature,
 				StartedAt:        c.StartedAt,
 				FinishedAt:       c.FinishedAt,
@@ -405,6 +408,15 @@ func (m *Message) SetToolResults(tr []ToolResult) {
 	}
 }
 
+// Clone returns a deep copy of the message with an independent Parts slice.
+// This prevents race conditions when the message is modified concurrently.
+func (m *Message) Clone() Message {
+	clone := *m
+	clone.Parts = make([]ContentPart, len(m.Parts))
+	copy(clone.Parts, m.Parts)
+	return clone
+}
+
 func (m *Message) AddFinish(reason FinishReason, message, details string) {
 	// remove any existing finish part
 	for i, part := range m.Parts {
@@ -424,16 +436,56 @@ func (m *Message) AddBinary(mimeType string, data []byte) {
 	m.Parts = append(m.Parts, BinaryContent{MIMEType: mimeType, Data: data})
 }
 
+func PromptWithTextAttachments(prompt string, attachments []Attachment) string {
+	var sb strings.Builder
+	sb.WriteString(prompt)
+	addedAttachments := false
+	for _, content := range attachments {
+		if !content.IsText() {
+			continue
+		}
+		if !addedAttachments {
+			sb.WriteString("\n<system_info>The files below have been attached by the user, consider them in your response</system_info>\n")
+			addedAttachments = true
+		}
+		if content.FilePath != "" {
+			fmt.Fprintf(&sb, "<file path='%s'>\n", content.FilePath)
+		} else {
+			sb.WriteString("<file>\n")
+		}
+		sb.WriteString("\n")
+		sb.Write(content.Content)
+		sb.WriteString("\n</file>\n")
+	}
+	return sb.String()
+}
+
 func (m *Message) ToAIMessage() []fantasy.Message {
 	var messages []fantasy.Message
 	switch m.Role {
 	case User:
 		var parts []fantasy.MessagePart
 		text := strings.TrimSpace(m.Content().Text)
+		var textAttachments []Attachment
+		for _, content := range m.BinaryContent() {
+			if !strings.HasPrefix(content.MIMEType, "text/") {
+				continue
+			}
+			textAttachments = append(textAttachments, Attachment{
+				FilePath: content.Path,
+				MimeType: content.MIMEType,
+				Content:  content.Data,
+			})
+		}
+		text = PromptWithTextAttachments(text, textAttachments)
 		if text != "" {
 			parts = append(parts, fantasy.TextPart{Text: text})
 		}
 		for _, content := range m.BinaryContent() {
+			// skip text attachements
+			if strings.HasPrefix(content.MIMEType, "text/") {
+				continue
+			}
 			parts = append(parts, fantasy.FilePart{
 				Filename:  content.Path,
 				Data:      content.Data,
@@ -464,6 +516,7 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 			if reasoning.ThoughtSignature != "" {
 				reasoningPart.ProviderOptions[google.Name] = &google.ReasoningMetadata{
 					Signature: reasoning.ThoughtSignature,
+					ToolID:    reasoning.ToolID,
 				}
 			}
 			parts = append(parts, reasoningPart)

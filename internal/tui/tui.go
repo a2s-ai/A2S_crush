@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/stringext"
 	cmpChat "github.com/charmbracelet/crush/internal/tui/components/chat"
 	"github.com/charmbracelet/crush/internal/tui/components/chat/splash"
 	"github.com/charmbracelet/crush/internal/tui/components/completions"
@@ -34,6 +36,7 @@ import (
 	"github.com/charmbracelet/crush/internal/tui/page/chat"
 	"github.com/charmbracelet/crush/internal/tui/styles"
 	"github.com/charmbracelet/crush/internal/tui/util"
+	"golang.org/x/mod/semver"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -120,14 +123,24 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.sendProgressBar = slices.Contains(msg, "WT_SESSION")
 		}
 	case tea.TerminalVersionMsg:
+		if a.sendProgressBar {
+			return a, nil
+		}
 		termVersion := strings.ToLower(msg.Name)
-		// Only enable progress bar for the following terminals.
-		if !a.sendProgressBar {
-			a.sendProgressBar = strings.Contains(termVersion, "ghostty")
+		switch {
+		case stringext.ContainsAny(termVersion, "ghostty", "rio"):
+			a.sendProgressBar = true
+		case strings.Contains(termVersion, "iterm2"):
+			// iTerm2 supports progress bars from version v3.6.6
+			matches := regexp.MustCompile(`^iterm2 (\d+\.\d+\.\d+)$`).FindStringSubmatch(termVersion)
+			if len(matches) == 2 && semver.Compare("v"+matches[1], "v3.6.6") >= 0 {
+				a.sendProgressBar = true
+			}
 		}
 		return a, nil
 	case tea.KeyboardEnhancementsMsg:
-		if msg.SupportsKeyDisambiguation() {
+		// A non-zero value means we have key disambiguation support.
+		if msg.Flags > 0 {
 			a.keyMap.Models.SetHelp("ctrl+m", "models")
 		}
 		for id, page := range a.pages {
@@ -266,7 +279,10 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, util.ReportWarn("Agent is busy, please wait...")
 		}
 
-		config.Get().UpdatePreferredModel(msg.ModelType, msg.Model)
+		cfg := config.Get()
+		if err := cfg.UpdatePreferredModel(msg.ModelType, msg.Model); err != nil {
+			return a, util.ReportError(err)
+		}
 
 		go a.app.UpdateAgentModel(context.TODO())
 
@@ -368,6 +384,20 @@ func (a *appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, pageCmd)
 		}
 		return a, tea.Batch(cmds...)
+	// Update Available
+	case pubsub.UpdateAvailableMsg:
+		// Show update notification in status bar
+		statusMsg := fmt.Sprintf("Crush update available: v%s → v%s.", msg.CurrentVersion, msg.LatestVersion)
+		if msg.IsDevelopment {
+			statusMsg = fmt.Sprintf("This is a development version of Crush. The latest version is v%s.", msg.LatestVersion)
+		}
+		s, statusCmd := a.status.Update(util.InfoMsg{
+			Type: util.InfoTypeUpdate,
+			Msg:  statusMsg,
+			TTL:  10 * time.Second,
+		})
+		a.status = s.(status.StatusCmp)
+		return a, statusCmd
 	}
 	s, _ := a.status.Update(msg)
 	a.status = s.(status.StatusCmp)
@@ -558,24 +588,20 @@ func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
 // View renders the complete application interface including pages, dialogs, and overlays.
 func (a *appModel) View() tea.View {
 	var view tea.View
-	view.AltScreen = true
 	t := styles.CurrentTheme()
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
 	view.BackgroundColor = t.BgBase
 	if a.wWidth < 25 || a.wHeight < 15 {
-		view.Layer = lipgloss.NewCanvas(
-			lipgloss.NewLayer(
-				t.S().Base.Width(a.wWidth).Height(a.wHeight).
-					Align(lipgloss.Center, lipgloss.Center).
-					Render(
-						t.S().Base.
-							Padding(1, 4).
-							Foreground(t.White).
-							BorderStyle(lipgloss.RoundedBorder()).
-							BorderForeground(t.Primary).
-							Render("Window too small!"),
-					),
-			),
-		)
+		view.Content = t.S().Base.Width(a.wWidth).Height(a.wHeight).
+			Align(lipgloss.Center, lipgloss.Center).
+			Render(t.S().Base.
+				Padding(1, 4).
+				Foreground(t.White).
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(t.Primary).
+				Render("Window too small!"),
+			)
 		return view
 	}
 
@@ -626,13 +652,9 @@ func (a *appModel) View() tea.View {
 		)
 	}
 
-	canvas := lipgloss.NewCanvas(
-		layers...,
-	)
-
-	view.Layer = canvas
+	comp := lipgloss.NewCompositor(layers...)
+	view.Content = comp.Render()
 	view.Cursor = cursor
-	view.MouseMode = tea.MouseModeCellMotion
 
 	if a.sendProgressBar && a.app != nil && a.app.AgentCoordinator != nil && a.app.AgentCoordinator.IsBusy() {
 		// HACK: use a random percentage to prevent ghostty from hiding it

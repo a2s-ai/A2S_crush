@@ -15,6 +15,8 @@ import (
 const (
 	endpoint = "https://data.charm.land"
 	key      = "phc_4zt4VgDWLqbYnJYEwLRxFoaTL2noNrQij0C6E8k3I0V"
+
+	nonInteractiveEventName = "NonInteractive"
 )
 
 var (
@@ -26,8 +28,13 @@ var (
 			Set("TERM", os.Getenv("TERM")).
 			Set("SHELL", filepath.Base(os.Getenv("SHELL"))).
 			Set("Version", version.Version).
-			Set("GoVersion", runtime.Version())
+			Set("GoVersion", runtime.Version()).
+			Set(nonInteractiveEventName, false)
 )
+
+func SetNonInteractive(nonInteractive bool) {
+	baseProps = baseProps.Set(nonInteractiveEventName, nonInteractive)
+}
 
 func Init() {
 	c, err := posthog.NewWithConfig(key, posthog.Config{
@@ -39,6 +46,22 @@ func Init() {
 	}
 	client = c
 	distinctId = getDistinctId()
+}
+
+func GetID() string { return distinctId }
+
+func Alias(userID string) {
+	if client == nil || distinctId == fallbackId || distinctId == "" || userID == "" {
+		return
+	}
+	if err := client.Enqueue(posthog.Alias{
+		DistinctId: distinctId,
+		Alias:      userID,
+	}); err != nil {
+		slog.Error("Failed to enqueue PostHog alias event", "error", err)
+		return
+	}
+	slog.Info("Aliased in PostHog", "machine_id", distinctId, "user_id", userID)
 }
 
 // send logs an event to PostHog with the given event name and properties.

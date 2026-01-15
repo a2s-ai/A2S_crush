@@ -16,7 +16,7 @@ import (
 )
 
 type DiagnosticsParams struct {
-	FilePath string `json:"file_path,omitempty" description:"The path to the file to get diagnostics for (leave w empty for project diagnostics)"`
+	FilePath string `json:"file_path,omitempty" description:"The path to the file to get diagnostics for (leave empty for project diagnostics)"`
 }
 
 const DiagnosticsToolName = "lsp_diagnostics"
@@ -94,7 +94,7 @@ func getDiagnostics(filePath string, lsps *csync.Map[string, *lsp.Client]) strin
 	}
 
 	out := output.String()
-	slog.Info("Diagnostics", "output", out)
+	slog.Debug("Diagnostics", "output", out)
 	return out
 }
 

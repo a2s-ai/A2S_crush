@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -98,7 +97,7 @@ func SubscribeEvents(ctx context.Context) <-chan pubsub.Event[Event] {
 
 // GetStates returns the current state of all MCP clients
 func GetStates() map[string]ClientInfo {
-	return maps.Collect(states.Seq2())
+	return states.Copy()
 }
 
 // GetState returns the state of a specific MCP client
@@ -108,17 +107,28 @@ func GetState(name string) (ClientInfo, bool) {
 
 // Close closes all MCP clients. This should be called during application shutdown.
 func Close() error {
-	var errs []error
-	for name, c := range sessions.Seq2() {
-		if err := c.Close(); err != nil &&
-			!errors.Is(err, io.EOF) &&
-			!errors.Is(err, context.Canceled) &&
-			err.Error() != "signal: killed" {
-			errs = append(errs, fmt.Errorf("close mcp: %s: %w", name, err))
+	var wg sync.WaitGroup
+	done := make(chan struct{}, 1)
+	go func() {
+		for name, session := range sessions.Seq2() {
+			wg.Go(func() {
+				if err := session.Close(); err != nil &&
+					!errors.Is(err, io.EOF) &&
+					!errors.Is(err, context.Canceled) &&
+					err.Error() != "signal: killed" {
+					slog.Warn("Failed to shutdown MCP client", "name", name, "error", err)
+				}
+			})
 		}
+		wg.Wait()
+		done <- struct{}{}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
 	}
 	broker.Shutdown()
-	return errors.Join(errs...)
+	return nil
 }
 
 // Initialize initializes MCP clients based on the provided configuration.
@@ -154,9 +164,7 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 				}
 			}()
 
-			ctx, cancel := context.WithTimeout(ctx, mcpTimeout(m))
-			defer cancel()
-
+			// createSession handles its own timeout internally.
 			session, err := createSession(ctx, name, m, cfg.Resolver())
 			if err != nil {
 				return
@@ -178,12 +186,12 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 				return
 			}
 
-			updateTools(name, tools)
+			toolCount := updateTools(name, tools)
 			updatePrompts(name, prompts)
 			sessions.Set(name, session)
 
 			updateState(name, StateConnected, nil, session, Counts{
-				Tools:   len(tools),
+				Tools:   toolCount,
 				Prompts: len(prompts),
 			})
 		}(name, m)
@@ -233,7 +241,6 @@ func updateState(name string, state State, err error, client *mcp.ClientSession,
 	case StateConnected:
 		info.ConnectedAt = time.Now()
 	case StateError:
-		updateTools(name, nil)
 		sessions.Del(name)
 	}
 	states.Set(name, info)
@@ -282,9 +289,8 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 				})
 			},
 			LoggingMessageHandler: func(_ context.Context, req *mcp.LoggingMessageRequest) {
-				slog.Info("mcp log", "name", name, "data", req.Params.Data)
+				slog.Info("MCP log", "name", name, "data", req.Params.Data)
 			},
-			KeepAlive: time.Minute * 10,
 		},
 	)
 
@@ -292,14 +298,14 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 	if err != nil {
 		err = maybeStdioErr(err, transport)
 		updateState(name, StateError, maybeTimeoutErr(err, timeout), nil, Counts{})
-		slog.Error("error starting mcp client", "error", err, "name", name)
+		slog.Error("MCP client failed to initialize", "error", err, "name", name)
 		cancel()
 		cancelTimer.Stop()
 		return nil, err
 	}
 
 	cancelTimer.Stop()
-	slog.Info("Initialized mcp client", "name", name)
+	slog.Info("MCP client initialized", "name", name)
 	return session, nil
 }
 

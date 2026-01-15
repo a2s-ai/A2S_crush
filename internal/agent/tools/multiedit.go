@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/diff"
 	"github.com/charmbracelet/crush/internal/filepathext"
+	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/lsp"
@@ -165,25 +166,35 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 	// Check permissions
 	_, additions, removals := diff.GenerateDiff("", currentContent, strings.TrimPrefix(params.FilePath, edit.workingDir))
 
-	p := edit.permissions.Request(permission.CreatePermissionRequest{
+	editsApplied := len(params.Edits) - len(failedEdits)
+	var description string
+	if len(failedEdits) > 0 {
+		description = fmt.Sprintf("Create file %s with %d of %d edits (%d failed)", params.FilePath, editsApplied, len(params.Edits), len(failedEdits))
+	} else {
+		description = fmt.Sprintf("Create file %s with %d edits", params.FilePath, editsApplied)
+	}
+	p, err := edit.permissions.Request(edit.ctx, permission.CreatePermissionRequest{
 		SessionID:   sessionID,
 		Path:        fsext.PathOrPrefix(params.FilePath, edit.workingDir),
 		ToolCallID:  call.ID,
 		ToolName:    MultiEditToolName,
 		Action:      "write",
-		Description: fmt.Sprintf("Create file %s with %d edits", params.FilePath, len(params.Edits)),
+		Description: description,
 		Params: MultiEditPermissionsParams{
 			FilePath:   params.FilePath,
 			OldContent: "",
 			NewContent: currentContent,
 		},
 	})
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
 	if !p {
 		return fantasy.ToolResponse{}, permission.ErrorPermissionDenied
 	}
 
 	// Write the file
-	err := os.WriteFile(params.FilePath, []byte(currentContent), 0o644)
+	err = os.WriteFile(params.FilePath, []byte(currentContent), 0o644)
 	if err != nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("failed to write file: %w", err)
 	}
@@ -196,13 +207,12 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 
 	_, err = edit.files.CreateVersion(edit.ctx, sessionID, params.FilePath, currentContent)
 	if err != nil {
-		slog.Debug("Error creating file history version", "error", err)
+		slog.Error("Error creating file history version", "error", err)
 	}
 
-	recordFileWrite(params.FilePath)
-	recordFileRead(params.FilePath)
+	filetracker.RecordWrite(params.FilePath)
+	filetracker.RecordRead(params.FilePath)
 
-	editsApplied := len(params.Edits) - len(failedEdits)
 	var message string
 	if len(failedEdits) > 0 {
 		message = fmt.Sprintf("File created with %d of %d edits: %s (%d edit(s) failed)", editsApplied, len(params.Edits), params.FilePath, len(failedEdits))
@@ -238,13 +248,13 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 	}
 
 	// Check if file was read before editing
-	if getLastReadTime(params.FilePath).IsZero() {
+	if filetracker.LastReadTime(params.FilePath).IsZero() {
 		return fantasy.NewTextErrorResponse("you must read the file before editing it. Use the View tool first"), nil
 	}
 
 	// Check if file was modified since last read
 	modTime := fileInfo.ModTime()
-	lastRead := getLastReadTime(params.FilePath)
+	lastRead := filetracker.LastReadTime(params.FilePath)
 	if modTime.After(lastRead) {
 		return fantasy.NewTextErrorResponse(
 			fmt.Sprintf("file %s has been modified since it was last read (mod time: %s, last read: %s)",
@@ -299,19 +309,30 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 
 	// Generate diff and check permissions
 	_, additions, removals := diff.GenerateDiff(oldContent, currentContent, strings.TrimPrefix(params.FilePath, edit.workingDir))
-	p := edit.permissions.Request(permission.CreatePermissionRequest{
+
+	editsApplied := len(params.Edits) - len(failedEdits)
+	var description string
+	if len(failedEdits) > 0 {
+		description = fmt.Sprintf("Apply %d of %d edits to file %s (%d failed)", editsApplied, len(params.Edits), params.FilePath, len(failedEdits))
+	} else {
+		description = fmt.Sprintf("Apply %d edits to file %s", editsApplied, params.FilePath)
+	}
+	p, err := edit.permissions.Request(edit.ctx, permission.CreatePermissionRequest{
 		SessionID:   sessionID,
 		Path:        fsext.PathOrPrefix(params.FilePath, edit.workingDir),
 		ToolCallID:  call.ID,
 		ToolName:    MultiEditToolName,
 		Action:      "write",
-		Description: fmt.Sprintf("Apply %d edits to file %s", len(params.Edits), params.FilePath),
+		Description: description,
 		Params: MultiEditPermissionsParams{
 			FilePath:   params.FilePath,
 			OldContent: oldContent,
 			NewContent: currentContent,
 		},
 	})
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
 	if !p {
 		return fantasy.ToolResponse{}, permission.ErrorPermissionDenied
 	}
@@ -338,20 +359,19 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		// User manually changed the content, store an intermediate version
 		_, err = edit.files.CreateVersion(edit.ctx, sessionID, params.FilePath, oldContent)
 		if err != nil {
-			slog.Debug("Error creating file history version", "error", err)
+			slog.Error("Error creating file history version", "error", err)
 		}
 	}
 
 	// Store the new version
 	_, err = edit.files.CreateVersion(edit.ctx, sessionID, params.FilePath, currentContent)
 	if err != nil {
-		slog.Debug("Error creating file history version", "error", err)
+		slog.Error("Error creating file history version", "error", err)
 	}
 
-	recordFileWrite(params.FilePath)
-	recordFileRead(params.FilePath)
+	filetracker.RecordWrite(params.FilePath)
+	filetracker.RecordRead(params.FilePath)
 
-	editsApplied := len(params.Edits) - len(failedEdits)
 	var message string
 	if len(failedEdits) > 0 {
 		message = fmt.Sprintf("Applied %d of %d edits to file: %s (%d edit(s) failed)", editsApplied, len(params.Edits), params.FilePath, len(failedEdits))

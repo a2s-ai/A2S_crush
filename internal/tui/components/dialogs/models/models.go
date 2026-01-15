@@ -1,3 +1,4 @@
+// Package models provides the model selection dialog for the TUI.
 package models
 
 import (
@@ -10,9 +11,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/catwalk/pkg/catwalk"
+	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/tui/components/core"
 	"github.com/charmbracelet/crush/internal/tui/components/dialogs"
+	"github.com/charmbracelet/crush/internal/tui/components/dialogs/copilot"
+	"github.com/charmbracelet/crush/internal/tui/components/dialogs/hyper"
 	"github.com/charmbracelet/crush/internal/tui/exp/list"
 	"github.com/charmbracelet/crush/internal/tui/styles"
 	"github.com/charmbracelet/crush/internal/tui/util"
@@ -67,6 +71,14 @@ type modelDialogCmp struct {
 	selectedModelType config.SelectedModelType
 	isAPIKeyValid     bool
 	apiKeyValue       string
+
+	// Hyper device flow state
+	hyperDeviceFlow     *hyper.DeviceFlow
+	showHyperDeviceFlow bool
+
+	// Copilot device flow state
+	copilotDeviceFlow     *copilot.DeviceFlow
+	showCopilotDeviceFlow bool
 }
 
 func NewModelDialogCmp() ModelDialog {
@@ -95,7 +107,10 @@ func NewModelDialogCmp() ModelDialog {
 }
 
 func (m *modelDialogCmp) Init() tea.Cmd {
-	return tea.Batch(m.modelList.Init(), m.apiKeyInput.Init())
+	return tea.Batch(
+		m.modelList.Init(),
+		m.apiKeyInput.Init(),
+	)
 }
 
 func (m *modelDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
@@ -104,17 +119,67 @@ func (m *modelDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 		m.wWidth = msg.Width
 		m.wHeight = msg.Height
 		m.apiKeyInput.SetWidth(m.width - 2)
-		m.help.Width = m.width - 2
+		m.help.SetWidth(m.width - 2)
 		return m, m.modelList.SetSize(m.listWidth(), m.listHeight())
 	case APIKeyStateChangeMsg:
 		u, cmd := m.apiKeyInput.Update(msg)
 		m.apiKeyInput = u.(*APIKeyInput)
 		return m, cmd
+	case hyper.DeviceFlowCompletedMsg:
+		return m, m.saveOauthTokenAndContinue(msg.Token, true)
+	case hyper.DeviceAuthInitiatedMsg, hyper.DeviceFlowErrorMsg:
+		if m.hyperDeviceFlow != nil {
+			u, cmd := m.hyperDeviceFlow.Update(msg)
+			m.hyperDeviceFlow = u.(*hyper.DeviceFlow)
+			return m, cmd
+		}
+		return m, nil
+	case copilot.DeviceAuthInitiatedMsg, copilot.DeviceFlowErrorMsg:
+		if m.copilotDeviceFlow != nil {
+			u, cmd := m.copilotDeviceFlow.Update(msg)
+			m.copilotDeviceFlow = u.(*copilot.DeviceFlow)
+			return m, cmd
+		}
+		return m, nil
+	case copilot.DeviceFlowCompletedMsg:
+		return m, m.saveOauthTokenAndContinue(msg.Token, true)
 	case tea.KeyPressMsg:
 		switch {
+		// Handle Hyper device flow keys
+		case key.Matches(msg, key.NewBinding(key.WithKeys("c", "C"))) && m.showHyperDeviceFlow:
+			return m, m.hyperDeviceFlow.CopyCode()
+		case key.Matches(msg, key.NewBinding(key.WithKeys("c", "C"))) && m.showCopilotDeviceFlow:
+			return m, m.copilotDeviceFlow.CopyCode()
 		case key.Matches(msg, m.keyMap.Select):
+			// If showing device flow, enter copies code and opens URL
+			if m.showHyperDeviceFlow && m.hyperDeviceFlow != nil {
+				return m, m.hyperDeviceFlow.CopyCodeAndOpenURL()
+			}
+			if m.showCopilotDeviceFlow && m.copilotDeviceFlow != nil {
+				return m, m.copilotDeviceFlow.CopyCodeAndOpenURL()
+			}
+			selectedItem := m.modelList.SelectedModel()
+			if selectedItem == nil {
+				return m, nil
+			}
+
+			modelType := config.SelectedModelTypeLarge
+			if m.modelList.GetModelType() == SmallModelType {
+				modelType = config.SelectedModelTypeSmall
+			}
+
+			askForApiKey := func() {
+				m.keyMap.isAPIKeyHelp = true
+				m.showHyperDeviceFlow = false
+				m.showCopilotDeviceFlow = false
+				m.needsAPIKey = true
+				m.selectedModel = selectedItem
+				m.selectedModelType = modelType
+				m.apiKeyInput.SetProviderName(selectedItem.Provider.Name)
+			}
+
 			if m.isAPIKeyValid {
-				return m, m.saveAPIKeyAndContinue(m.apiKeyValue)
+				return m, m.saveOauthTokenAndContinue(m.apiKeyValue, true)
 			}
 			if m.needsAPIKey {
 				// Handle API key submission
@@ -154,15 +219,6 @@ func (m *modelDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 					},
 				)
 			}
-			// Normal model selection
-			selectedItem := m.modelList.SelectedModel()
-
-			var modelType config.SelectedModelType
-			if m.modelList.GetModelType() == LargeModelType {
-				modelType = config.SelectedModelTypeLarge
-			} else {
-				modelType = config.SelectedModelTypeSmall
-			}
 
 			// Check if provider is configured
 			if m.isProviderConfigured(string(selectedItem.Provider.ID)) {
@@ -178,29 +234,59 @@ func (m *modelDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 						ModelType: modelType,
 					}),
 				)
-			} else {
-				// Provider not configured, show API key input
-				m.needsAPIKey = true
+			}
+			switch selectedItem.Provider.ID {
+			case hyperp.Name:
+				m.showHyperDeviceFlow = true
 				m.selectedModel = selectedItem
 				m.selectedModelType = modelType
-				m.apiKeyInput.SetProviderName(selectedItem.Provider.Name)
-				return m, nil
+				m.hyperDeviceFlow = hyper.NewDeviceFlow()
+				m.hyperDeviceFlow.SetWidth(m.width - 2)
+				return m, m.hyperDeviceFlow.Init()
+			case catwalk.InferenceProviderCopilot:
+				if token, ok := config.Get().ImportCopilot(); ok {
+					m.selectedModel = selectedItem
+					m.selectedModelType = modelType
+					return m, m.saveOauthTokenAndContinue(token, true)
+				}
+				m.showCopilotDeviceFlow = true
+				m.selectedModel = selectedItem
+				m.selectedModelType = modelType
+				m.copilotDeviceFlow = copilot.NewDeviceFlow()
+				m.copilotDeviceFlow.SetWidth(m.width - 2)
+				return m, m.copilotDeviceFlow.Init()
 			}
+			// For other providers, show API key input
+			askForApiKey()
+			return m, nil
 		case key.Matches(msg, m.keyMap.Tab):
-			if m.needsAPIKey {
+			switch {
+			case m.needsAPIKey:
 				u, cmd := m.apiKeyInput.Update(msg)
 				m.apiKeyInput = u.(*APIKeyInput)
 				return m, cmd
-			}
-			if m.modelList.GetModelType() == LargeModelType {
+			case m.modelList.GetModelType() == LargeModelType:
 				m.modelList.SetInputPlaceholder(smallModelInputPlaceholder)
 				return m, m.modelList.SetModelType(SmallModelType)
-			} else {
+			default:
 				m.modelList.SetInputPlaceholder(largeModelInputPlaceholder)
 				return m, m.modelList.SetModelType(LargeModelType)
 			}
 		case key.Matches(msg, m.keyMap.Close):
-			if m.needsAPIKey {
+			switch {
+			case m.showHyperDeviceFlow:
+				if m.hyperDeviceFlow != nil {
+					m.hyperDeviceFlow.Cancel()
+				}
+				m.showHyperDeviceFlow = false
+				m.selectedModel = nil
+			case m.showCopilotDeviceFlow:
+				if m.copilotDeviceFlow != nil {
+					m.copilotDeviceFlow.Cancel()
+				}
+				m.showCopilotDeviceFlow = false
+				m.selectedModel = nil
+			case m.needsAPIKey:
 				if m.isAPIKeyValid {
 					return m, nil
 				}
@@ -211,25 +297,28 @@ func (m *modelDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 				m.apiKeyValue = ""
 				m.apiKeyInput.Reset()
 				return m, nil
+			default:
+				return m, util.CmdHandler(dialogs.CloseDialogMsg{})
 			}
-			return m, util.CmdHandler(dialogs.CloseDialogMsg{})
 		default:
-			if m.needsAPIKey {
+			switch {
+			case m.needsAPIKey:
 				u, cmd := m.apiKeyInput.Update(msg)
 				m.apiKeyInput = u.(*APIKeyInput)
 				return m, cmd
-			} else {
+			default:
 				u, cmd := m.modelList.Update(msg)
 				m.modelList = u
 				return m, cmd
 			}
 		}
 	case tea.PasteMsg:
-		if m.needsAPIKey {
+		switch {
+		case m.needsAPIKey:
 			u, cmd := m.apiKeyInput.Update(msg)
 			m.apiKeyInput = u.(*APIKeyInput)
 			return m, cmd
-		} else {
+		default:
 			var cmd tea.Cmd
 			m.modelList, cmd = m.modelList.Update(msg)
 			return m, cmd
@@ -237,7 +326,31 @@ func (m *modelDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		u, cmd := m.apiKeyInput.Update(msg)
 		m.apiKeyInput = u.(*APIKeyInput)
+		if m.showHyperDeviceFlow && m.hyperDeviceFlow != nil {
+			u, cmd = m.hyperDeviceFlow.Update(msg)
+			m.hyperDeviceFlow = u.(*hyper.DeviceFlow)
+		}
+		if m.showCopilotDeviceFlow && m.copilotDeviceFlow != nil {
+			u, cmd = m.copilotDeviceFlow.Update(msg)
+			m.copilotDeviceFlow = u.(*copilot.DeviceFlow)
+		}
 		return m, cmd
+	default:
+		// Pass all other messages to the device flow for spinner animation
+		switch {
+		case m.showHyperDeviceFlow && m.hyperDeviceFlow != nil:
+			u, cmd := m.hyperDeviceFlow.Update(msg)
+			m.hyperDeviceFlow = u.(*hyper.DeviceFlow)
+			return m, cmd
+		case m.showCopilotDeviceFlow && m.copilotDeviceFlow != nil:
+			u, cmd := m.copilotDeviceFlow.Update(msg)
+			m.copilotDeviceFlow = u.(*copilot.DeviceFlow)
+			return m, cmd
+		default:
+			u, cmd := m.apiKeyInput.Update(msg)
+			m.apiKeyInput = u.(*APIKeyInput)
+			return m, cmd
+		}
 	}
 	return m, nil
 }
@@ -245,7 +358,41 @@ func (m *modelDialogCmp) Update(msg tea.Msg) (util.Model, tea.Cmd) {
 func (m *modelDialogCmp) View() string {
 	t := styles.CurrentTheme()
 
-	if m.needsAPIKey {
+	if m.showHyperDeviceFlow && m.hyperDeviceFlow != nil {
+		// Show Hyper device flow
+		m.keyMap.isHyperDeviceFlow = true
+		deviceFlowView := m.hyperDeviceFlow.View()
+		content := lipgloss.JoinVertical(
+			lipgloss.Left,
+			t.S().Base.Padding(0, 1, 1, 1).Render(core.Title("Authenticate with Hyper", m.width-4)),
+			deviceFlowView,
+			"",
+			t.S().Base.Width(m.width-2).PaddingLeft(1).AlignHorizontal(lipgloss.Left).Render(m.help.View(m.keyMap)),
+		)
+		return m.style().Render(content)
+	}
+	if m.showCopilotDeviceFlow && m.copilotDeviceFlow != nil {
+		// Show Hyper device flow
+		m.keyMap.isCopilotDeviceFlow = m.copilotDeviceFlow.State != copilot.DeviceFlowStateUnavailable
+		m.keyMap.isCopilotUnavailable = m.copilotDeviceFlow.State == copilot.DeviceFlowStateUnavailable
+		deviceFlowView := m.copilotDeviceFlow.View()
+		content := lipgloss.JoinVertical(
+			lipgloss.Left,
+			t.S().Base.Padding(0, 1, 1, 1).Render(core.Title("Authenticate with GitHub Copilot", m.width-4)),
+			deviceFlowView,
+			"",
+			t.S().Base.Width(m.width-2).PaddingLeft(1).AlignHorizontal(lipgloss.Left).Render(m.help.View(m.keyMap)),
+		)
+		return m.style().Render(content)
+	}
+
+	// Reset the flags when not showing device flow
+	m.keyMap.isHyperDeviceFlow = false
+	m.keyMap.isCopilotDeviceFlow = false
+	m.keyMap.isCopilotUnavailable = false
+
+	switch {
+	case m.needsAPIKey:
 		// Show API key input
 		m.keyMap.isAPIKeyHelp = true
 		m.keyMap.isAPIKeyValid = m.isAPIKeyValid
@@ -275,6 +422,12 @@ func (m *modelDialogCmp) View() string {
 }
 
 func (m *modelDialogCmp) Cursor() *tea.Cursor {
+	if m.showHyperDeviceFlow && m.hyperDeviceFlow != nil {
+		return m.hyperDeviceFlow.Cursor()
+	}
+	if m.showCopilotDeviceFlow && m.copilotDeviceFlow != nil {
+		return m.copilotDeviceFlow.Cursor()
+	}
 	if m.needsAPIKey {
 		cursor := m.apiKeyInput.Cursor()
 		if cursor != nil {
@@ -345,10 +498,8 @@ func (m *modelDialogCmp) modelTypeRadio() string {
 
 func (m *modelDialogCmp) isProviderConfigured(providerID string) bool {
 	cfg := config.Get()
-	if _, ok := cfg.Providers.Get(providerID); ok {
-		return true
-	}
-	return false
+	_, ok := cfg.Providers.Get(providerID)
+	return ok
 }
 
 func (m *modelDialogCmp) getProvider(providerID catwalk.InferenceProvider) (*catwalk.Provider, error) {
@@ -365,7 +516,7 @@ func (m *modelDialogCmp) getProvider(providerID catwalk.InferenceProvider) (*cat
 	return nil, nil
 }
 
-func (m *modelDialogCmp) saveAPIKeyAndContinue(apiKey string) tea.Cmd {
+func (m *modelDialogCmp) saveOauthTokenAndContinue(apiKey any, close bool) tea.Cmd {
 	if m.selectedModel == nil {
 		return util.ReportError(fmt.Errorf("no model selected"))
 	}
@@ -378,8 +529,12 @@ func (m *modelDialogCmp) saveAPIKeyAndContinue(apiKey string) tea.Cmd {
 
 	// Reset API key state and continue with model selection
 	selectedModel := *m.selectedModel
-	return tea.Sequence(
-		util.CmdHandler(dialogs.CloseDialogMsg{}),
+	var cmds []tea.Cmd
+	if close {
+		cmds = append(cmds, util.CmdHandler(dialogs.CloseDialogMsg{}))
+	}
+	cmds = append(
+		cmds,
 		util.CmdHandler(ModelSelectedMsg{
 			Model: config.SelectedModel{
 				Model:           selectedModel.Model.ID,
@@ -390,4 +545,5 @@ func (m *modelDialogCmp) saveAPIKeyAndContinue(apiKey string) tea.Cmd {
 			ModelType: m.selectedModelType,
 		}),
 	)
+	return tea.Sequence(cmds...)
 }

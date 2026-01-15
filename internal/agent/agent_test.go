@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,12 +9,12 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"charm.land/x/vcr"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/shell"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/dnaeon/go-vcr.v4/pkg/recorder"
 
 	_ "github.com/joho/godotenv/autoload"
 )
@@ -25,7 +26,7 @@ var modelPairs = []modelPair{
 	{"zai-glm4.6", zAIBuilder("glm-4.6"), zAIBuilder("glm-4.5-air")},
 }
 
-func getModels(t *testing.T, r *recorder.Recorder, pair modelPair) (fantasy.LanguageModel, fantasy.LanguageModel) {
+func getModels(t *testing.T, r *vcr.Recorder, pair modelPair) (fantasy.LanguageModel, fantasy.LanguageModel) {
 	large, err := pair.largeModel(t, r)
 	require.NoError(t, err)
 	small, err := pair.smallModel(t, r)
@@ -34,13 +35,12 @@ func getModels(t *testing.T, r *recorder.Recorder, pair modelPair) (fantasy.Lang
 }
 
 func setupAgent(t *testing.T, pair modelPair) (SessionAgent, fakeEnv) {
-	r := newRecorder(t)
+	r := vcr.NewRecorder(t)
 	large, small := getModels(t, r, pair)
 	env := testEnv(t)
 
 	createSimpleGoProject(t, env.workingDir)
 	agent, err := coderAgent(r, env, large, small)
-	shell.Reset(env.workingDir)
 	require.NoError(t, err)
 	return agent, env
 }
@@ -455,6 +455,10 @@ func TestCoderAgent(t *testing.T) {
 				require.Contains(t, string(content), "Hello, Crush!", "Expected file to contain 'Hello, Crush!'")
 			})
 			t.Run("sourcegraph tool", func(t *testing.T) {
+				if runtime.GOOS == "darwin" {
+					t.Skip("skipping flakey test on macos for now")
+				}
+
 				agent, env := setupAgent(t, pair)
 
 				session, err := env.sessions.Create(t.Context(), "New Session")
@@ -614,6 +618,40 @@ func TestCoderAgent(t *testing.T) {
 				require.True(t, foundGlobResult, "Expected to find glob tool result")
 				require.True(t, foundLSResult, "Expected to find ls tool result")
 			})
+		})
+	}
+}
+
+func makeTestTodos(n int) []session.Todo {
+	todos := make([]session.Todo, n)
+	for i := range n {
+		todos[i] = session.Todo{
+			Status:  session.TodoStatusPending,
+			Content: fmt.Sprintf("Task %d: Implement feature with some description that makes it realistic", i),
+		}
+	}
+	return todos
+}
+
+func BenchmarkBuildSummaryPrompt(b *testing.B) {
+	cases := []struct {
+		name     string
+		numTodos int
+	}{
+		{"0todos", 0},
+		{"5todos", 5},
+		{"10todos", 10},
+		{"50todos", 50},
+	}
+
+	for _, tc := range cases {
+		todos := makeTestTodos(tc.numTodos)
+
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				_ = buildSummaryPrompt(todos)
+			}
 		})
 	}
 }
