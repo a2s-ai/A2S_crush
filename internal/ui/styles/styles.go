@@ -12,16 +12,12 @@ import (
 	"charm.land/glamour/v2/ansi"
 	"charm.land/lipgloss/v2"
 	"github.com/alecthomas/chroma/v2"
-	"github.com/charmbracelet/crush/internal/tui/exp/diffview"
+	"github.com/charmbracelet/crush/internal/ui/diffview"
 	"github.com/charmbracelet/x/exp/charmtone"
 )
 
 const (
 	CheckIcon   string = "✓"
-	ErrorIcon   string = "×"
-	WarningIcon string = "⚠"
-	InfoIcon    string = "ⓘ"
-	HintIcon    string = "∵"
 	SpinnerIcon string = "⋯"
 	LoadingIcon string = "⟳"
 	ModelIcon   string = "◇"
@@ -49,6 +45,11 @@ const (
 
 	ScrollbarThumb string = "┃"
 	ScrollbarTrack string = "│"
+
+	LSPErrorIcon   string = "E"
+	LSPWarningIcon string = "W"
+	LSPInfoIcon    string = "I"
+	LSPHintIcon    string = "H"
 )
 
 const (
@@ -108,10 +109,14 @@ type Styles struct {
 	TextSelection lipgloss.Style
 
 	// LSP and MCP status indicators
-	ItemOfflineIcon lipgloss.Style
-	ItemBusyIcon    lipgloss.Style
-	ItemErrorIcon   lipgloss.Style
-	ItemOnlineIcon  lipgloss.Style
+	ResourceGroupTitle     lipgloss.Style
+	ResourceOfflineIcon    lipgloss.Style
+	ResourceBusyIcon       lipgloss.Style
+	ResourceErrorIcon      lipgloss.Style
+	ResourceOnlineIcon     lipgloss.Style
+	ResourceName           lipgloss.Style
+	ResourceStatus         lipgloss.Style
+	ResourceAdditionalText lipgloss.Style
 
 	// Markdown & Chroma
 	Markdown      ansi.StyleConfig
@@ -1198,10 +1203,14 @@ func DefaultStyles() Styles {
 	s.Initialize.Accent = s.Base.Foreground(greenDark)
 
 	// LSP and MCP status.
-	s.ItemOfflineIcon = lipgloss.NewStyle().Foreground(charmtone.Squid).SetString("●")
-	s.ItemBusyIcon = s.ItemOfflineIcon.Foreground(charmtone.Citron)
-	s.ItemErrorIcon = s.ItemOfflineIcon.Foreground(charmtone.Coral)
-	s.ItemOnlineIcon = s.ItemOfflineIcon.Foreground(charmtone.Guac)
+	s.ResourceGroupTitle = lipgloss.NewStyle().Foreground(charmtone.Oyster)
+	s.ResourceOfflineIcon = lipgloss.NewStyle().Foreground(charmtone.Iron).SetString("●")
+	s.ResourceBusyIcon = s.ResourceOfflineIcon.Foreground(charmtone.Citron)
+	s.ResourceErrorIcon = s.ResourceOfflineIcon.Foreground(charmtone.Coral)
+	s.ResourceOnlineIcon = s.ResourceOfflineIcon.Foreground(charmtone.Guac)
+	s.ResourceName = lipgloss.NewStyle().Foreground(charmtone.Squid)
+	s.ResourceStatus = lipgloss.NewStyle().Foreground(charmtone.Oyster)
+	s.ResourceAdditionalText = lipgloss.NewStyle().Foreground(charmtone.Oyster)
 
 	// LSP
 	s.LSP.ErrorDiagnostic = s.Base.Foreground(redDark)

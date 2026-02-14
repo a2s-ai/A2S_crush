@@ -77,8 +77,6 @@ func (l *List) Gap() int {
 
 // AtBottom returns whether the list is showing the last item at the bottom.
 func (l *List) AtBottom() bool {
-	const margin = 2
-
 	if len(l.items) == 0 {
 		return true
 	}
@@ -94,7 +92,7 @@ func (l *List) AtBottom() bool {
 		totalHeight += itemHeight
 	}
 
-	return totalHeight-l.offsetLine-margin <= l.height
+	return totalHeight-l.offsetLine <= l.height
 }
 
 // SetReverse shows the list in reverse order.
@@ -158,7 +156,7 @@ func (l *List) getItem(idx int) renderedItem {
 
 	rendered := item.Render(l.width)
 	rendered = strings.TrimRight(rendered, "\n")
-	height := countLines(rendered)
+	height := strings.Count(rendered, "\n") + 1
 	ri := renderedItem{
 		content: rendered,
 		height:  height,
@@ -190,13 +188,18 @@ func (l *List) ScrollBy(lines int) {
 	}
 
 	if lines > 0 {
+		if l.AtBottom() {
+			// Already at bottom
+			return
+		}
+
 		// Scroll down
 		l.offsetLine += lines
 		currentItem := l.getItem(l.offsetIdx)
 		for l.offsetLine >= currentItem.height {
 			l.offsetLine -= currentItem.height
 			if l.gap > 0 {
-				l.offsetLine -= l.gap
+				l.offsetLine = max(0, l.offsetLine-l.gap)
 			}
 
 			// Move to next item
@@ -219,14 +222,13 @@ func (l *List) ScrollBy(lines int) {
 		// Scroll up
 		l.offsetLine += lines // lines is negative
 		for l.offsetLine < 0 {
-			if l.offsetIdx <= 0 {
+			// Move to previous item
+			l.offsetIdx--
+			if l.offsetIdx < 0 {
 				// Reached top
 				l.ScrollToTop()
 				break
 			}
-
-			// Move to previous item
-			l.offsetIdx--
 			prevItem := l.getItem(l.offsetIdx)
 			totalHeight := prevItem.height
 			if l.gap > 0 {
@@ -641,12 +643,4 @@ func (l *List) findItemAtY(_, y int) (itemIdx int, itemY int) {
 	}
 
 	return -1, -1
-}
-
-// countLines counts the number of lines in a string.
-func countLines(s string) int {
-	if s == "" {
-		return 1
-	}
-	return strings.Count(s, "\n") + 1
 }
