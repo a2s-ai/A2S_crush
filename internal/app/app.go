@@ -213,18 +213,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 
 	defer stopSpinner()
 
-	const maxPromptLengthForTitle = 100
-	const titlePrefix = "Non-interactive: "
-	var titleSuffix string
-
-	if len(prompt) > maxPromptLengthForTitle {
-		titleSuffix = prompt[:maxPromptLengthForTitle] + "..."
-	} else {
-		titleSuffix = prompt
-	}
-	title := titlePrefix + titleSuffix
-
-	sess, err := app.Sessions.Create(ctx, title)
+	sess, err := app.Sessions.Create(ctx, agent.DefaultSessionName)
 	if err != nil {
 		return fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
@@ -246,6 +235,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 			done <- response{
 				err: fmt.Errorf("failed to start agent processing stream: %w", err),
 			}
+			return
 		}
 		done <- response{
 			result: result,
@@ -551,7 +541,7 @@ func (app *App) Shutdown() {
 	var wg sync.WaitGroup
 
 	// Shared shutdown context for all timeout-bounded cleanup.
-	shutdownCtx, cancel := context.WithTimeout(app.globalCtx, 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(app.globalCtx), 5*time.Second)
 	defer cancel()
 
 	// Send exit event
